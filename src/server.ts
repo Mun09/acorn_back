@@ -5,9 +5,19 @@ import morgan from 'morgan';
 import { logger } from './lib/logger';
 import { env } from './config/env';
 import { DatabaseManager } from './lib/database';
-import { authRouter } from './api/auth/router';
-import { generalRateLimit } from './api/middleware/rateLimit';
-import { errorHandler, notFoundHandler } from './api/middleware/error';
+import {
+  authRouter,
+  symbolsRouter,
+  postsRouter,
+  feedRouter,
+  socialRouter,
+  moderationRouter,
+  searchRouter,
+  dbExampleRouter,
+  generalRateLimit,
+  errorHandler,
+  notFoundHandler,
+} from './api';
 
 export function createServer(): Application {
   const app = express();
@@ -58,6 +68,13 @@ export function createServer(): Application {
 
   // API routes
   app.use('/api/auth', authRouter);
+  app.use('/api/symbols', symbolsRouter);
+  app.use('/api/posts', postsRouter);
+  app.use('/api/feed', feedRouter);
+  app.use('/api/social', socialRouter);
+  app.use('/api/moderation', moderationRouter);
+  app.use('/api/search', searchRouter);
+  app.use('/api/db-example', dbExampleRouter);
 
   app.get('/api/hello', (_req: Request, res: Response) => {
     res.status(200).json({

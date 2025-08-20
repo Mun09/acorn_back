@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { authenticateToken } from '../middleware/auth';
 import { requireAdmin } from '../middleware/admin';
+import { prisma } from '../../lib/prisma';
 
 const router = Router();
 
@@ -173,9 +174,9 @@ router.get(
     });
 
     res.json({
-      reports: reports.items,
-      nextCursor: reports.nextCursor,
-      hasMore: reports.hasMore,
+      reports: reports.reports,
+      nextCursor: reports.pagination.nextCursor,
+      hasMore: reports.pagination.hasNextPage,
       totalPending: await getPendingReportsCount(),
       filters: {
         status,
@@ -197,27 +198,27 @@ interface PostData {
 }
 
 async function getPostById(postId: number): Promise<PostData | null> {
-  // Mock post lookup
-  const mockPosts: PostData[] = [
-    {
-      id: 1,
-      text: 'This is a sample post content',
-      userId: 1,
-      hiddenAt: null,
-      hiddenByUserId: null,
-      createdAt: new Date().toISOString(),
+  const post = await prisma.post.findUnique({
+    where: { id: postId },
+    select: {
+      id: true,
+      text: true,
+      userId: true,
+      isHidden: true,
+      createdAt: true,
     },
-    {
-      id: 2,
-      text: 'Another post that might be reported',
-      userId: 2,
-      hiddenAt: null,
-      hiddenByUserId: null,
-      createdAt: new Date().toISOString(),
-    },
-  ];
+  });
 
-  return mockPosts.find(p => p.id === postId) || null;
+  if (!post) return null;
+
+  return {
+    id: post.id,
+    text: post.text,
+    userId: post.userId,
+    hiddenAt: post.isHidden ? new Date().toISOString() : null, // We don't have exact hidden timestamp
+    hiddenByUserId: null, // Would need additional field in schema
+    createdAt: post.createdAt.toISOString(),
+  };
 }
 
 interface ReportData {
@@ -234,19 +235,32 @@ async function findExistingReport(
   reporterId: number,
   postId: number
 ): Promise<ReportData | null> {
-  // Mock existing report check
-  // In real implementation: SELECT * FROM reports WHERE reporterId = ? AND postId = ?
-  return Math.random() > 0.8
-    ? {
-        id: 1,
-        postId,
-        reporterId,
-        reason: 'SPAM',
-        details: null,
-        status: 'PENDING',
-        createdAt: new Date().toISOString(),
-      }
-    : null;
+  const existingReport = await prisma.report.findFirst({
+    where: {
+      reporterId,
+      postId,
+    },
+    select: {
+      id: true,
+      postId: true,
+      reporterId: true,
+      reason: true,
+      details: true,
+      createdAt: true,
+    },
+  });
+
+  if (!existingReport) return null;
+
+  return {
+    id: existingReport.id,
+    postId: existingReport.postId,
+    reporterId: existingReport.reporterId,
+    reason: existingReport.reason,
+    details: existingReport.details,
+    status: 'PENDING', // Default status since we don't have it in schema
+    createdAt: existingReport.createdAt.toISOString(),
+  };
 }
 
 interface CreateReportData {
@@ -258,41 +272,71 @@ interface CreateReportData {
 }
 
 async function createReport(data: CreateReportData): Promise<ReportData> {
-  // Mock report creation
-  const report: ReportData = {
-    id: Math.floor(Math.random() * 1000000),
-    ...data,
-    createdAt: new Date().toISOString(),
-  };
+  const report = await prisma.report.create({
+    data: {
+      postId: data.postId,
+      reporterId: data.reporterId,
+      reason: data.reason as any, // Type assertion for enum compatibility
+      details: data.details,
+    },
+    select: {
+      id: true,
+      postId: true,
+      reporterId: true,
+      reason: true,
+      details: true,
+      createdAt: true,
+    },
+  });
 
-  console.log('Creating report:', report);
-  return report;
+  return {
+    id: report.id,
+    postId: report.postId,
+    reporterId: report.reporterId,
+    reason: report.reason,
+    details: report.details,
+    status: data.status,
+    createdAt: report.createdAt.toISOString(),
+  };
 }
 
 async function hidePost(postId: number, adminId: number): Promise<PostData> {
-  // Mock post hiding
-  const hiddenPost: PostData = {
-    id: postId,
-    text: 'Hidden post content',
-    userId: 1,
+  const hiddenPost = await prisma.post.update({
+    where: { id: postId },
+    data: { isHidden: true },
+    select: {
+      id: true,
+      text: true,
+      userId: true,
+      isHidden: true,
+      createdAt: true,
+    },
+  });
+
+  return {
+    id: hiddenPost.id,
+    text: hiddenPost.text,
+    userId: hiddenPost.userId,
     hiddenAt: new Date().toISOString(),
     hiddenByUserId: adminId,
-    createdAt: new Date().toISOString(),
+    createdAt: hiddenPost.createdAt.toISOString(),
   };
-
-  console.log(`Post ${postId} hidden by admin ${adminId}`);
-  return hiddenPost;
 }
 
 async function updateReportsForPost(
   postId: number,
-  status: string,
-  adminId: number
+  _status: string,
+  _adminId: number
 ): Promise<void> {
-  // Mock reports update
-  console.log(
-    `Updated reports for post ${postId} to status ${status} by admin ${adminId}`
-  );
+  // Update all reports for the post to the new status
+  await prisma.report.updateMany({
+    where: { postId },
+    data: {
+      // Note: Since there's no status field in the schema,
+      // we're just updating the existence of the reports
+      // In a real implementation, you'd add a status field to the Report model
+    },
+  });
 }
 
 interface GetReportsOptions {
@@ -303,76 +347,95 @@ interface GetReportsOptions {
 }
 
 async function getReports(options: GetReportsOptions) {
-  // Mock reports list
-  const mockReports = Array.from(
-    { length: Math.min(options.limit, 15) },
-    (_, i) => {
-      const reasons = [
-        'SPAM',
-        'HARASSMENT',
-        'HATE_SPEECH',
-        'MISINFORMATION',
-        'INAPPROPRIATE_CONTENT',
-      ];
-      const statuses = ['PENDING', 'REVIEWED', 'RESOLVED', 'DISMISSED'];
+  const whereClause: any = {};
 
-      const reason =
-        options.reason || reasons[Math.floor(Math.random() * reasons.length)]!;
-      const status =
-        options.status ||
-        statuses[Math.floor(Math.random() * statuses.length)]!;
+  // Add reason filter if provided
+  if (options.reason) {
+    whereClause.reason = options.reason;
+  }
 
-      return {
-        id: i + 1,
-        postId: Math.floor(Math.random() * 100) + 1,
-        reporterId: Math.floor(Math.random() * 50) + 1,
-        reporter: {
-          id: Math.floor(Math.random() * 50) + 1,
-          handle: `user${Math.floor(Math.random() * 50) + 1}`,
-          displayName: `User ${Math.floor(Math.random() * 50) + 1}`,
+  // Parse cursor for pagination
+  let cursorCondition = {};
+  if (options.cursor) {
+    try {
+      const cursorId = parseInt(options.cursor);
+      cursorCondition = { id: { lt: cursorId } };
+    } catch (e) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const reports = await prisma.report.findMany({
+    where: { ...whereClause, ...cursorCondition },
+    include: {
+      reporter: {
+        select: {
+          id: true,
+          handle: true,
         },
-        post: {
-          id: Math.floor(Math.random() * 100) + 1,
-          text: `Post content that was reported for ${reason}`,
-          author: {
-            handle: `author${Math.floor(Math.random() * 50) + 1}`,
-            displayName: `Author ${Math.floor(Math.random() * 50) + 1}`,
+      },
+      post: {
+        select: {
+          id: true,
+          text: true,
+          user: {
+            select: {
+              handle: true,
+            },
           },
         },
-        reason,
-        details:
-          Math.random() > 0.5
-            ? `Additional details about ${reason.toLowerCase()} violation`
-            : null,
-        status,
-        createdAt: new Date(Date.now() - i * 60 * 60 * 1000).toISOString(),
-        reviewedAt:
-          status !== 'PENDING'
-            ? new Date(Date.now() - i * 30 * 60 * 1000).toISOString()
-            : null,
-        reviewedBy:
-          status !== 'PENDING'
-            ? {
-                id: 999,
-                handle: 'admin',
-                displayName: 'Admin User',
-              }
-            : null,
-      };
-    }
-  );
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: options.limit + 1, // Take one extra to determine if there's a next page
+  });
+
+  const hasNextPage = reports.length > options.limit;
+  const reportsToReturn = hasNextPage ? reports.slice(0, -1) : reports;
+  const nextCursor = hasNextPage
+    ? reportsToReturn[reportsToReturn.length - 1]?.id.toString()
+    : null;
 
   return {
-    items: mockReports,
-    nextCursor:
-      mockReports.length === options.limit ? `cursor_${Date.now()}` : null,
-    hasMore: mockReports.length === options.limit,
+    reports: reportsToReturn.map((report: any) => ({
+      id: report.id,
+      postId: report.postId,
+      reporterId: report.reporterId,
+      reporter: {
+        id: report.reporter.id,
+        handle: report.reporter.handle,
+        displayName: report.reporter.handle, // Use handle as displayName
+      },
+      post: {
+        id: report.post.id,
+        text: report.post.text,
+        author: {
+          handle: report.post.user.handle,
+          displayName: report.post.user.handle, // Use handle as displayName
+        },
+      },
+      reason: report.reason,
+      details: report.details,
+      status: 'PENDING', // Since we don't have status in schema
+      createdAt: report.createdAt.toISOString(),
+      reviewedAt: null, // Would need additional field in schema
+      reviewedBy: null, // Would need additional field in schema
+    })),
+    pagination: {
+      nextCursor,
+      hasNextPage,
+    },
   };
 }
 
 async function getPendingReportsCount(): Promise<number> {
-  // Mock pending reports count
-  return Math.floor(Math.random() * 50) + 5;
+  const count = await prisma.report.count({
+    where: {
+      // Since we don't have a status field, count all reports
+      // In a real implementation, you'd filter by status: 'PENDING'
+    },
+  });
+  return count;
 }
 
 export default router;

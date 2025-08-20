@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { authenticateToken } from '../middleware/auth';
+import { prisma } from '../../lib/prisma';
 
 const router = Router();
 
@@ -111,103 +112,260 @@ router.get(
  * Get following feed (chronological from followed users)
  */
 async function getFollowingFeed(
-  _userId: number,
+  userId: number,
   cursor?: string,
   limit: number = 20
 ) {
-  // Mock implementation - would use actual database queries
-  const mockPosts = Array.from({ length: limit }, (_, i) => {
-    const postId = cursor ? parseInt(cursor) + i + 1 : i + 1;
+  // Get posts from users that the current user follows
+  let whereClause: any = {
+    user: {
+      followers: {
+        some: {
+          followerId: userId,
+        },
+      },
+    },
+    isHidden: false,
+  };
+
+  // Handle cursor for pagination
+  if (cursor) {
+    try {
+      const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+      whereClause.createdAt = {
+        lt: new Date(cursorData.createdAt),
+      };
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const posts = await prisma.post.findMany({
+    where: whereClause,
+    include: {
+      user: {
+        select: {
+          id: true,
+          handle: true,
+          bio: true,
+          trustScore: true,
+          verifiedFlags: true,
+        },
+      },
+      symbols: {
+        include: {
+          symbol: true,
+        },
+      },
+      reactions: {
+        select: {
+          type: true,
+          userId: true,
+        },
+      },
+      _count: {
+        select: {
+          reactions: true,
+          replies: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+    take: limit + 1,
+  });
+
+  const hasMore = posts.length > limit;
+  const resultPosts = hasMore ? posts.slice(0, -1) : posts;
+
+  // Format posts
+  const formattedPosts = resultPosts.map((post: any) => {
+    const reactionCounts = post.reactions.reduce(
+      (
+        acc: Record<string, number>,
+        reaction: { type: string; userId: number }
+      ) => {
+        acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+
     return {
-      id: postId,
-      text: `Following feed post ${postId} from user I follow. Mentions $MSFT and ADA!`,
-      media: [],
-      userId: Math.floor(Math.random() * 5) + 10, // Mock followed user IDs
-      createdAt: new Date(
-        Date.now() - (cursor ? parseInt(cursor) * 1000 : 0) - i * 600000
-      ), // 10 min intervals
+      id: post.id,
+      text: post.text,
+      media: (post as any).media
+        ? JSON.parse((post as any).media as string)
+        : [],
+      userId: post.userId,
+      createdAt: post.createdAt,
       author: {
-        id: Math.floor(Math.random() * 5) + 10,
-        handle: `followed_user_${Math.floor(Math.random() * 5) + 1}`,
+        id: post.user.id,
+        handle: post.user.handle,
+        bio: post.user.bio,
+        trustScore: post.user.trustScore,
+        verifiedFlags: post.user.verifiedFlags,
       },
-      symbols: [
-        { raw: '$MSFT', ticker: 'MSFT', kind: 'STOCK' },
-        { raw: 'ADA', ticker: 'ADA', kind: 'CRYPTO' },
-      ],
-      reactionCounts: {
-        LIKE: Math.floor(Math.random() * 15),
-        BOOST: Math.floor(Math.random() * 8),
-        BOOKMARK: Math.floor(Math.random() * 10),
-      },
-      isFollowing: true,
+      symbols: post.symbols.map((ps: any) => ({
+        raw: ps.symbol.ticker,
+        ticker: ps.symbol.ticker,
+        kind: ps.symbol.kind,
+        exchange: ps.symbol.exchange,
+      })),
+      reactionCounts,
+      isFollowing: true, // By definition, these are from followed users
     };
   });
 
-  // Simple cursor-based pagination for following feed
   const nextCursor =
-    mockPosts.length === limit && mockPosts.length > 0
-      ? String(mockPosts[mockPosts.length - 1]!.createdAt.getTime())
+    hasMore && resultPosts.length > 0
+      ? Buffer.from(
+          JSON.stringify({
+            createdAt: resultPosts[resultPosts.length - 1]!.createdAt,
+          })
+        ).toString('base64')
       : null;
 
-  return { posts: mockPosts, nextCursor };
+  return { posts: formattedPosts, nextCursor };
 }
 
 /**
  * Get For You feed with algorithmic ranking
  */
 async function getForYouFeed(
-  _userId: number,
+  userId: number,
   cursor?: string,
   limit: number = 20
 ) {
-  // Mock user interests (would be fetched from user profile/history)
-  const userInterestSymbols = ['TSLA', 'BTC', 'ETH', 'AAPL', 'NVDA'];
+  // Get user's interest symbols from their recent interactions
+  const userInterestSymbols = await getUserInterestSymbols(userId);
 
-  // Generate mock posts with various characteristics
-  const mockPosts = Array.from({ length: limit * 2 }, (_, i) => {
-    const postId = cursor ? parseInt(cursor) + i + 1 : i + 1;
-    const createdAt = new Date(
-      Date.now() - Math.random() * FEED_PARAMS.MAX_POST_AGE
+  // Get all posts from the last 24 hours for algorithmic ranking
+  const cutoffTime = new Date(Date.now() - FEED_PARAMS.MAX_POST_AGE);
+
+  let whereClause: any = {
+    createdAt: {
+      gte: cutoffTime,
+    },
+    isHidden: false,
+  };
+
+  // Handle cursor for pagination - for algorithmic feed, we use score + timestamp
+  if (cursor) {
+    try {
+      const [scoreStr, timestampStr] = cursor.split('_');
+      if (scoreStr && timestampStr) {
+        const timestamp = parseInt(timestampStr);
+
+        // Skip posts with higher scores, or same score but newer timestamp
+        whereClause.OR = [
+          {
+            createdAt: {
+              lt: new Date(timestamp),
+            },
+          },
+        ];
+      }
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const posts = await prisma.post.findMany({
+    where: whereClause,
+    include: {
+      user: {
+        select: {
+          id: true,
+          handle: true,
+          bio: true,
+          trustScore: true,
+          verifiedFlags: true,
+        },
+      },
+      symbols: {
+        include: {
+          symbol: true,
+        },
+      },
+      reactions: {
+        select: {
+          type: true,
+          userId: true,
+        },
+      },
+      _count: {
+        select: {
+          reactions: true,
+          replies: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+    take: Math.min(limit * 3, 100), // Get more posts to rank algorithmically
+  });
+
+  // Calculate algorithmic scores for each post
+  const scoredPosts = posts.map((post: any) => {
+    const reactionCounts = post.reactions.reduce(
+      (
+        acc: Record<string, number>,
+        reaction: { type: string; userId: number }
+      ) => {
+        acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+        return acc;
+      },
+      { LIKE: 0, BOOST: 0, BOOKMARK: 0 }
     );
-    const symbols = generateRandomSymbols();
 
-    // Calculate reaction metrics
-    const totalReactions = Math.floor(Math.random() * 50);
-    const reactionCounts = {
-      LIKE: Math.floor(totalReactions * 0.6),
-      BOOST: Math.floor(totalReactions * 0.2),
-      BOOKMARK: Math.floor(totalReactions * 0.2),
-    };
+    const postSymbols = post.symbols.map((ps: any) => ps.symbol.ticker);
 
     // Calculate algorithm score
     const score = calculateForYouScore(
-      createdAt,
+      post.createdAt,
       reactionCounts,
-      symbols,
+      post.symbols.map((ps: any) => ({
+        ticker: ps.symbol.ticker,
+        raw: ps.symbol.ticker,
+        kind: ps.symbol.kind,
+      })),
       userInterestSymbols
     );
 
     return {
-      id: postId,
-      text: `For You post ${postId}: Discussing ${symbols.map(s => s.raw).join(', ')} trends!`,
-      media: [],
-      userId: Math.floor(Math.random() * 20) + 1,
-      createdAt,
+      id: post.id,
+      text: post.text,
+      media: (post as any).media
+        ? JSON.parse((post as any).media as string)
+        : [],
+      userId: post.userId,
+      createdAt: post.createdAt,
       author: {
-        id: Math.floor(Math.random() * 20) + 1,
-        handle: `user_${Math.floor(Math.random() * 20) + 1}`,
+        id: post.user.id,
+        handle: post.user.handle,
+        bio: post.user.bio,
+        trustScore: post.user.trustScore,
+        verifiedFlags: post.user.verifiedFlags,
       },
-      symbols,
+      symbols: post.symbols.map((ps: any) => ({
+        raw: ps.symbol.ticker,
+        ticker: ps.symbol.ticker,
+        kind: ps.symbol.kind,
+        exchange: ps.symbol.exchange,
+      })),
       reactionCounts,
-      score, // Internal scoring for sorting
+      score,
       scoreBreakdown: {
         initialReactionScore: calculateInitialReactionScore(
-          createdAt,
+          post.createdAt,
           reactionCounts
         ),
-        timeDecayScore: calculateTimeDecay(createdAt),
+        timeDecayScore: calculateTimeDecay(post.createdAt),
         symbolMatchScore: calculateSymbolMatchBonus(
-          symbols.map(s => s.ticker),
+          postSymbols,
           userInterestSymbols
         ),
         totalScore: score,
@@ -216,10 +374,10 @@ async function getForYouFeed(
   });
 
   // Sort by algorithmic score (descending)
-  mockPosts.sort((a, b) => b.score - a.score);
+  scoredPosts.sort((a: any, b: any) => b.score - a.score);
 
   // Take only the requested limit
-  const selectedPosts = mockPosts.slice(0, limit);
+  const selectedPosts = scoredPosts.slice(0, limit);
 
   // Cursor for pagination (use score + timestamp for stable pagination)
   const nextCursor =
@@ -228,6 +386,75 @@ async function getForYouFeed(
       : null;
 
   return { posts: selectedPosts, nextCursor };
+}
+
+/**
+ * Get user's interest symbols based on their recent interactions
+ */
+async function getUserInterestSymbols(userId: number): Promise<string[]> {
+  // Get symbols from user's recent posts and reactions
+  const [recentPosts, recentReactions] = await Promise.all([
+    // User's recent posts
+    prisma.post.findMany({
+      where: {
+        userId,
+        createdAt: {
+          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+        },
+      },
+      include: {
+        symbols: {
+          include: {
+            symbol: true,
+          },
+        },
+      },
+      take: 20,
+    }),
+
+    // User's recent reactions
+    prisma.reaction.findMany({
+      where: {
+        userId,
+      },
+      include: {
+        post: {
+          include: {
+            symbols: {
+              include: {
+                symbol: true,
+              },
+            },
+          },
+        },
+      },
+      take: 50,
+    }),
+  ]);
+
+  const symbolCounts = new Map<string, number>();
+
+  // Count symbols from user's posts (higher weight)
+  recentPosts.forEach((post: any) => {
+    post.symbols.forEach((ps: any) => {
+      const ticker = ps.symbol.ticker;
+      symbolCounts.set(ticker, (symbolCounts.get(ticker) || 0) + 3);
+    });
+  });
+
+  // Count symbols from reacted posts (lower weight)
+  recentReactions.forEach((reaction: any) => {
+    reaction.post.symbols.forEach((ps: any) => {
+      const ticker = ps.symbol.ticker;
+      symbolCounts.set(ticker, (symbolCounts.get(ticker) || 0) + 1);
+    });
+  });
+
+  // Return top symbols sorted by interest score
+  return Array.from(symbolCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([ticker]) => ticker);
 }
 
 /**
@@ -293,24 +520,6 @@ function calculateInitialReactionScore(
 /**
  * Generate random symbols for mock posts
  */
-function generateRandomSymbols() {
-  const allSymbols = [
-    { raw: '$TSLA', ticker: 'TSLA', kind: 'STOCK' },
-    { raw: '$AAPL', ticker: 'AAPL', kind: 'STOCK' },
-    { raw: '$NVDA', ticker: 'NVDA', kind: 'STOCK' },
-    { raw: '$MSFT', ticker: 'MSFT', kind: 'STOCK' },
-    { raw: 'BTC', ticker: 'BTC', kind: 'CRYPTO' },
-    { raw: 'ETH', ticker: 'ETH', kind: 'CRYPTO' },
-    { raw: 'ADA', ticker: 'ADA', kind: 'CRYPTO' },
-    { raw: 'SOL', ticker: 'SOL', kind: 'CRYPTO' },
-    { raw: '005930.KS', ticker: '005930', kind: 'STOCK', exchange: 'KS' },
-  ];
-
-  const count = Math.floor(Math.random() * 3) + 1; // 1-3 symbols per post
-  const shuffled = allSymbols.sort(() => 0.5 - Math.random());
-  return shuffled.slice(0, count);
-}
-
 /**
  * GET /feed/debug
  * Debug endpoint to understand algorithm scoring
@@ -318,44 +527,88 @@ function generateRandomSymbols() {
 router.get(
   '/debug',
   authenticateToken,
-  asyncHandler(async (_req, res) => {
-    const userInterestSymbols = ['TSLA', 'BTC', 'ETH', 'AAPL', 'NVDA'];
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.id;
+    const userInterestSymbols = await getUserInterestSymbols(userId);
 
-    // Generate a few sample posts with detailed scoring
-    const samplePosts = Array.from({ length: 5 }, (_, i) => {
-      const createdAt = new Date(Date.now() - i * 2 * 60 * 60 * 1000); // 2 hours apart
-      const symbols = generateRandomSymbols();
-      const reactionCounts = {
-        LIKE: Math.floor(Math.random() * 20),
-        BOOST: Math.floor(Math.random() * 10),
-        BOOKMARK: Math.floor(Math.random() * 8),
-      };
+    // Get a few recent posts with detailed scoring
+    const recentPosts = await prisma.post.findMany({
+      where: {
+        createdAt: {
+          gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+        },
+        isHidden: false,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            handle: true,
+          },
+        },
+        symbols: {
+          include: {
+            symbol: true,
+          },
+        },
+        reactions: {
+          select: {
+            type: true,
+            userId: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: 5,
+    });
+
+    const samplePosts = recentPosts.map((post: any) => {
+      const reactionCounts = post.reactions.reduce(
+        (acc: Record<string, number>, reaction: { type: string }) => {
+          acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+          return acc;
+        },
+        { LIKE: 0, BOOST: 0, BOOKMARK: 0 }
+      );
+
+      const postSymbols = post.symbols.map((ps: any) => ps.symbol.ticker);
 
       const initialReactionScore = calculateInitialReactionScore(
-        createdAt,
+        post.createdAt,
         reactionCounts
       );
-      const timeDecayScore = calculateTimeDecay(createdAt);
+      const timeDecayScore = calculateTimeDecay(post.createdAt);
       const symbolMatchScore = calculateSymbolMatchBonus(
-        symbols.map(s => s.ticker),
+        postSymbols,
         userInterestSymbols
       );
       const totalScore = calculateForYouScore(
-        createdAt,
+        post.createdAt,
         reactionCounts,
-        symbols,
+        post.symbols.map((ps: any) => ({
+          ticker: ps.symbol.ticker,
+          raw: ps.symbol.ticker,
+          kind: ps.symbol.kind,
+        })),
         userInterestSymbols
       );
 
       return {
-        id: i + 1,
-        text: `Debug post ${i + 1}`,
-        createdAt,
-        symbols,
+        id: post.id,
+        text:
+          post.text.substring(0, 100) + (post.text.length > 100 ? '...' : ''),
+        author: post.user.handle,
+        createdAt: post.createdAt,
+        symbols: post.symbols.map((ps: any) => ({
+          ticker: ps.symbol.ticker,
+          kind: ps.symbol.kind,
+        })),
         reactionCounts,
         algorithm: {
           userInterests: userInterestSymbols,
-          symbolsInPost: symbols.map(s => s.ticker),
+          symbolsInPost: postSymbols,
           scores: {
             initialReaction: initialReactionScore,
             timeDecay: timeDecayScore,
@@ -373,11 +626,13 @@ router.get(
 
     // Sort by score
     samplePosts.sort(
-      (a, b) => b.algorithm.scores.total - a.algorithm.scores.total
+      (a: any, b: any) => b.algorithm.scores.total - a.algorithm.scores.total
     );
 
     res.json({
       message: 'Feed algorithm debug information',
+      userId,
+      userInterestSymbols,
       parameters: FEED_PARAMS,
       samplePosts,
     });

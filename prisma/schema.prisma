@@ -150,6 +150,7 @@ enum NotificationKind {
   MENTION
   REPLY
   REACTION
+  FOLLOW
 }
 
 enum ReportReason {

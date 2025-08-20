@@ -90,7 +90,7 @@ router.post(
       user: {
         id: targetUser.id,
         handle: targetUser.handle,
-        displayName: targetUser.displayName,
+        displayName: targetUser.handle, // Use handle as display name
       },
       isFollowing: action === 'followed',
     });
@@ -177,7 +177,7 @@ async function findUserByHandle(handle: string) {
       handle: true,
       email: true,
       bio: true,
-    }
+    },
   });
 }
 
@@ -190,8 +190,8 @@ async function checkFollowStatus(
       followerId_followeeId: {
         followerId,
         followeeId: followingId,
-      }
-    }
+      },
+    },
   });
   return !!follow;
 }
@@ -204,7 +204,7 @@ async function followUser(
     data: {
       followerId,
       followeeId: followingId,
-    }
+    },
   });
 }
 
@@ -217,8 +217,8 @@ async function unfollowUser(
       followerId_followeeId: {
         followerId,
         followeeId: followingId,
-      }
-    }
+      },
+    },
   });
 }
 
@@ -231,8 +231,17 @@ interface NotificationData {
 }
 
 async function createNotification(data: NotificationData): Promise<void> {
-  // Mock notification creation
-  console.log('Creating notification:', data);
+  await prisma.notification.create({
+    data: {
+      userId: data.userId,
+      kind: data.type,
+      payload: {
+        fromUserId: data.fromUserId,
+        relatedEntityId: data.relatedEntityId,
+        message: data.message,
+      },
+    },
+  });
 }
 
 interface GetNotificationsOptions {
@@ -245,77 +254,135 @@ async function getNotifications(
   userId: number,
   options: GetNotificationsOptions
 ) {
-  // Mock notifications
-  const mockNotifications = Array.from(
-    { length: Math.min(options.limit, 10) },
-    (_, i) => {
-      const types = ['MENTION', 'REPLY', 'REACTION', 'FOLLOW'] as const;
-      const type =
-        options.type || types[Math.floor(Math.random() * types.length)]!;
+  let whereClause: any = {
+    userId,
+  };
+
+  if (options.type) {
+    whereClause.kind = options.type;
+  }
+
+  let cursorClause: any = {};
+  if (options.cursor) {
+    try {
+      const cursorData = JSON.parse(
+        Buffer.from(options.cursor, 'base64').toString()
+      );
+      cursorClause = {
+        id: {
+          lt: cursorData.id,
+        },
+      };
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  whereClause = { ...whereClause, ...cursorClause };
+
+  const notifications = await prisma.notification.findMany({
+    where: whereClause,
+    orderBy: {
+      createdAt: 'desc',
+    },
+    take: options.limit + 1,
+    include: {
+      user: {
+        select: {
+          id: true,
+          handle: true,
+        },
+      },
+    },
+  });
+
+  const hasMore = notifications.length > options.limit;
+  const items = hasMore ? notifications.slice(0, -1) : notifications;
+
+  const formattedItems = await Promise.all(
+    items.map(async (notification: any) => {
+      const payload = notification.payload as any;
+
+      // Get the fromUser information if fromUserId exists
+      let fromUser = null;
+      if (payload.fromUserId) {
+        const user = await prisma.user.findUnique({
+          where: { id: payload.fromUserId },
+          select: {
+            id: true,
+            handle: true,
+          },
+        });
+
+        if (user) {
+          fromUser = {
+            handle: user.handle,
+            displayName: user.handle,
+          };
+        }
+      }
 
       return {
-        id: i + 1,
-        type,
-        userId,
-        fromUserId: Math.floor(Math.random() * 10) + 1,
-        fromUser: {
-          handle: `user${Math.floor(Math.random() * 10) + 1}`,
-          displayName: `User ${Math.floor(Math.random() * 10) + 1}`,
-        },
-        message: getNotificationMessage(type),
-        relatedEntityId:
-          type !== 'FOLLOW' ? Math.floor(Math.random() * 100) + 1 : null,
-        readAt: Math.random() > 0.6 ? new Date().toISOString() : null,
-        createdAt: new Date(Date.now() - i * 60 * 60 * 1000).toISOString(),
+        id: notification.id,
+        type: notification.kind,
+        userId: notification.userId,
+        fromUserId: payload.fromUserId,
+        fromUser,
+        message: payload.message,
+        relatedEntityId: payload.relatedEntityId,
+        readAt: notification.readAt?.toISOString() || null,
+        createdAt: notification.createdAt.toISOString(),
       };
-    }
+    })
   );
 
+  const nextCursor =
+    hasMore && items.length > 0
+      ? Buffer.from(
+          JSON.stringify({
+            id: items[items.length - 1]!.id,
+            createdAt: items[items.length - 1]!.createdAt,
+          })
+        ).toString('base64')
+      : null;
+
   return {
-    items: mockNotifications,
-    nextCursor:
-      mockNotifications.length === options.limit
-        ? `cursor_${Date.now()}`
-        : null,
-    hasMore: mockNotifications.length === options.limit,
+    items: formattedItems,
+    nextCursor,
+    hasMore,
   };
 }
 
-function getNotificationMessage(type: string): string {
-  switch (type) {
-    case 'MENTION':
-      return 'mentioned you in a post';
-    case 'REPLY':
-      return 'replied to your post';
-    case 'REACTION':
-      return 'reacted to your post';
-    case 'FOLLOW':
-      return 'started following you';
-    default:
-      return 'interacted with you';
-  }
-}
-
-async function getUnreadNotificationCount(_userId: number): Promise<number> {
-  // Mock unread count
-  return Math.floor(Math.random() * 10);
+async function getUnreadNotificationCount(userId: number): Promise<number> {
+  return await prisma.notification.count({
+    where: {
+      userId,
+      readAt: null,
+    },
+  });
 }
 
 async function getNotificationById(id: number) {
-  // Mock notification lookup
-  return {
-    id,
-    userId: 1, // Mock user ID
-    type: 'MENTION' as const,
-    message: 'mentioned you in a post',
-    readAt: null,
-    createdAt: new Date().toISOString(),
-  };
+  return await prisma.notification.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      userId: true,
+      kind: true,
+      payload: true,
+      readAt: true,
+      createdAt: true,
+    },
+  });
 }
 
 async function markNotificationAsRead(id: number): Promise<void> {
-  // Mock mark as read
-  console.log(`Marked notification ${id} as read`);
+  await prisma.notification.update({
+    where: { id },
+    data: {
+      readAt: new Date(),
+    },
+  });
 }
 
 /**

@@ -41,15 +41,15 @@ router.get(
             posts: true,
             followers: true,
             following: true,
-          }
-        }
-      }
+          },
+        },
+      },
     });
 
     if (!user) {
       return res.status(404).json({
         error: 'User not found',
-        message: `User with handle @${handle} does not exist`
+        message: `User with handle @${handle} does not exist`,
       });
     }
 
@@ -61,8 +61,8 @@ router.get(
           followerId_followeeId: {
             followerId: currentUserId,
             followeeId: user.id,
-          }
-        }
+          },
+        },
       });
       isFollowing = !!follow;
     }
@@ -80,7 +80,7 @@ router.get(
           following: user._count.following,
         },
         isFollowing,
-      }
+      },
     });
   })
 );
@@ -94,18 +94,18 @@ router.get(
   optionalAuth,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
-    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
-    const cursor = req.query.cursor as string;
+    const limit = Math.min(parseInt(req.query['limit'] as string) || 20, 50);
+    const cursor = req.query['cursor'] as string;
 
     // Get user
     const user = await prisma.user.findUnique({
       where: { handle },
-      select: { id: true }
+      select: { id: true },
     });
 
     if (!user) {
       return res.status(404).json({
-        error: 'User not found'
+        error: 'User not found',
       });
     }
 
@@ -121,28 +121,28 @@ router.get(
             id: true,
             handle: true,
             bio: true,
-          }
+          },
         },
         reactions: {
           select: {
             type: true,
             userId: true,
-          }
+          },
         },
         symbols: {
           include: {
             symbol: true,
-          }
+          },
         },
         _count: {
           select: {
             reactions: true,
             replies: true,
-          }
-        }
+          },
+        },
       },
       orderBy: {
-        createdAt: 'desc'
+        createdAt: 'desc',
       },
       take: limit + 1,
       ...(cursor && {
@@ -156,14 +156,14 @@ router.get(
     const nextCursor = hasMore ? items[items.length - 1].id.toString() : null;
 
     // Transform posts with reaction counts
-    const transformedPosts = items.map(post => {
+    const transformedPosts = items.map((post: any) => {
       const reactionCounts = {
         LIKE: 0,
         BOOST: 0,
         BOOKMARK: 0,
       };
 
-      post.reactions.forEach(reaction => {
+      post.reactions.forEach((reaction: any) => {
         if (reaction.type in reactionCounts) {
           reactionCounts[reaction.type as keyof typeof reactionCounts]++;
         }
@@ -177,7 +177,7 @@ router.get(
         user: post.user,
         reactionCounts,
         replyCount: post._count.replies,
-        symbols: post.symbols.map(ps => ps.symbol),
+        symbols: post.symbols.map((ps: any) => ps.symbol),
       };
     });
 
@@ -203,18 +203,18 @@ router.post(
     // Get target user
     const targetUser = await prisma.user.findUnique({
       where: { handle },
-      select: { id: true, handle: true }
+      select: { id: true, handle: true },
     });
 
     if (!targetUser) {
       return res.status(404).json({
-        error: 'User not found'
+        error: 'User not found',
       });
     }
 
     if (targetUser.id === currentUserId) {
       return res.status(400).json({
-        error: 'Cannot follow yourself'
+        error: 'Cannot follow yourself',
       });
     }
 
@@ -224,8 +224,8 @@ router.post(
         followerId_followeeId: {
           followerId: currentUserId,
           followeeId: targetUser.id,
-        }
-      }
+        },
+      },
     });
 
     let action: 'followed' | 'unfollowed';
@@ -237,8 +237,8 @@ router.post(
           followerId_followeeId: {
             followerId: currentUserId,
             followeeId: targetUser.id,
-          }
-        }
+          },
+        },
       });
       action = 'unfollowed';
     } else {
@@ -247,7 +247,7 @@ router.post(
         data: {
           followerId: currentUserId,
           followeeId: targetUser.id,
-        }
+        },
       });
       action = 'followed';
 
@@ -260,8 +260,8 @@ router.post(
             fromUserId: currentUserId,
             fromHandle: req.user!.handle,
             message: `@${req.user!.handle} started following you`,
-          }
-        }
+          },
+        },
       });
     }
 

@@ -7,6 +7,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { optionalAuth } from '../middleware/auth';
+import { prisma } from '../../lib/prisma';
 
 const router = Router();
 
@@ -199,139 +200,332 @@ async function performSearch(
 async function searchPosts(
   query: string,
   limit: number,
-  _cursor?: string,
+  cursor?: string,
   _userId?: number
 ) {
-  // Mock implementation - replace with actual database queries
-  const mockPosts = Array.from({ length: Math.min(limit, 15) }, (_, i) => {
-    const rank = calculateMockRank(
-      query,
-      `Post content ${i + 1} about ${query}`
+  let whereClause: any = {
+    OR: [
+      {
+        text: {
+          contains: query,
+          mode: 'insensitive',
+        },
+      },
+    ],
+    isHidden: false,
+  };
+
+  // Handle cursor for pagination
+  if (cursor) {
+    try {
+      const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+      whereClause.id = {
+        lt: cursorData.id,
+      };
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const posts = await prisma.post.findMany({
+    where: whereClause,
+    include: {
+      user: {
+        select: {
+          id: true,
+          handle: true,
+          bio: true,
+          trustScore: true,
+          verifiedFlags: true,
+        },
+      },
+      symbols: {
+        include: {
+          symbol: true,
+        },
+      },
+      reactions: {
+        select: {
+          type: true,
+          userId: true,
+        },
+      },
+      _count: {
+        select: {
+          reactions: true,
+          replies: true,
+        },
+      },
+    },
+    orderBy: [
+      {
+        createdAt: 'desc',
+      },
+    ],
+    take: limit + 1,
+  });
+
+  const hasMore = posts.length > limit;
+  const items = hasMore ? posts.slice(0, -1) : posts;
+
+  const formattedPosts = items.map((post: any) => {
+    const reactionCounts = post.reactions.reduce(
+      (
+        acc: Record<string, number>,
+        reaction: { type: string; userId: number }
+      ) => {
+        acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>
     );
+
+    // Calculate simple relevance rank based on text match
+    const rank = calculateTextRelevance(post.text, query);
+
     return {
-      id: i + 1,
-      content: `This is post ${i + 1} discussing ${query} and related topics. Lorem ipsum dolor sit amet.`,
+      id: post.id,
+      content: post.text,
       author: {
-        id: Math.floor(Math.random() * 100) + 1,
-        handle: `user${i + 1}`,
-        displayName: `User ${i + 1}`,
-        avatar: null,
+        id: post.user.id,
+        handle: post.user.handle,
+        displayName: post.user.handle,
+        bio: post.user.bio,
+        trustScore: post.user.trustScore,
+        verifiedFlags: post.user.verifiedFlags,
       },
-      createdAt: new Date(Date.now() - i * 60 * 60 * 1000).toISOString(),
-      reactionCounts: {
-        LIKE: Math.floor(Math.random() * 50),
-        BOOST: Math.floor(Math.random() * 20),
-        BOOKMARK: Math.floor(Math.random() * 15),
-      },
+      createdAt: post.createdAt.toISOString(),
+      reactionCounts,
       rank,
-      highlights: extractHighlights(
-        `This is post ${i + 1} discussing ${query}`,
-        query
-      ),
+      highlights: extractHighlights(post.text, query),
+      symbols: post.symbols.map((ps: any) => ({
+        ticker: ps.symbol.ticker,
+        kind: ps.symbol.kind,
+        exchange: ps.symbol.exchange,
+      })),
     };
   });
 
   // Sort by rank (descending)
-  mockPosts.sort((a, b) => b.rank - a.rank);
+  formattedPosts.sort((a: any, b: any) => b.rank - a.rank);
+
+  const nextCursor =
+    hasMore && items.length > 0
+      ? Buffer.from(
+          JSON.stringify({
+            id: items[items.length - 1]!.id,
+          })
+        ).toString('base64')
+      : null;
 
   return {
-    items: mockPosts,
-    hasMore: mockPosts.length === limit,
-    nextCursor: mockPosts.length === limit ? `posts_${Date.now()}` : null,
+    items: formattedPosts,
+    hasMore,
+    nextCursor,
   };
 }
 
 /**
  * Search people (users) by handle and display name
  */
-async function searchPeople(query: string, limit: number, _cursor?: string) {
-  // Mock implementation
-  const mockPeople = Array.from({ length: Math.min(limit, 10) }, (_, i) => {
-    const handle = `${query}user${i + 1}`;
-    const displayName = `${query} User ${i + 1}`;
-    const rank = calculateMockRank(query, `${handle} ${displayName}`);
+async function searchPeople(query: string, limit: number, cursor?: string) {
+  let whereClause: any = {
+    OR: [
+      {
+        handle: {
+          contains: query,
+          mode: 'insensitive',
+        },
+      },
+      {
+        bio: {
+          contains: query,
+          mode: 'insensitive',
+        },
+      },
+    ],
+  };
+
+  // Handle cursor for pagination
+  if (cursor) {
+    try {
+      const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+      whereClause.id = {
+        lt: cursorData.id,
+      };
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const users = await prisma.user.findMany({
+    where: whereClause,
+    include: {
+      _count: {
+        select: {
+          followers: true,
+          following: true,
+          posts: true,
+        },
+      },
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+    take: limit + 1,
+  });
+
+  const hasMore = users.length > limit;
+  const items = hasMore ? users.slice(0, -1) : users;
+
+  const formattedUsers = items.map((user: any) => {
+    // Calculate relevance rank
+    const rank = calculateTextRelevance(
+      `${user.handle} ${user.bio || ''}`,
+      query
+    );
 
     return {
-      id: i + 1,
-      handle,
-      displayName,
-      bio: `Bio for ${displayName} - interested in ${query} and technology`,
+      id: user.id,
+      handle: user.handle,
+      displayName: user.handle,
+      bio: user.bio,
       avatar: null,
-      verified: Math.random() > 0.8,
-      followerCount: Math.floor(Math.random() * 1000),
-      isFollowing: Math.random() > 0.7,
+      verified: !!user.verifiedFlags,
+      followerCount: user._count.followers,
+      followingCount: user._count.following,
+      postCount: user._count.posts,
+      trustScore: user.trustScore,
+      isFollowing: false, // Would need to check follow relationship with current user
       rank,
       highlights: {
-        handle: extractHighlights(handle, query),
-        displayName: extractHighlights(displayName, query),
-        bio: extractHighlights(
-          `Bio for ${displayName} - interested in ${query}`,
-          query
-        ),
+        handle: extractHighlights(user.handle, query),
+        displayName: extractHighlights(user.handle, query),
+        bio: user.bio ? extractHighlights(user.bio, query) : '',
       },
     };
   });
 
   // Sort by rank (descending)
-  mockPeople.sort((a, b) => b.rank - a.rank);
+  formattedUsers.sort((a: any, b: any) => b.rank - a.rank);
+
+  const nextCursor =
+    hasMore && items.length > 0
+      ? Buffer.from(
+          JSON.stringify({
+            id: items[items.length - 1]!.id,
+          })
+        ).toString('base64')
+      : null;
 
   return {
-    items: mockPeople,
-    hasMore: mockPeople.length === limit,
-    nextCursor: mockPeople.length === limit ? `people_${Date.now()}` : null,
+    items: formattedUsers,
+    hasMore,
+    nextCursor,
   };
 }
 
 /**
  * Search symbols by ticker and name
  */
-async function searchSymbols(query: string, limit: number, _cursor?: string) {
-  // Mock implementation
-  const mockSymbols = Array.from({ length: Math.min(limit, 8) }, (_, i) => {
-    const ticker = `${query.toUpperCase()}${i + 1}`;
-    const name = `${query} Corporation ${i + 1}`;
-    const rank = calculateMockRank(query, `${ticker} ${name}`);
+async function searchSymbols(query: string, limit: number, cursor?: string) {
+  let whereClause: any = {
+    OR: [
+      {
+        ticker: {
+          contains: query.toUpperCase(),
+          mode: 'insensitive',
+        },
+      },
+    ],
+  };
+
+  // Handle cursor for pagination
+  if (cursor) {
+    try {
+      const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+      whereClause.id = {
+        lt: cursorData.id,
+      };
+    } catch (error) {
+      // Invalid cursor, ignore
+    }
+  }
+
+  const symbols = await prisma.symbol.findMany({
+    where: whereClause,
+    include: {
+      _count: {
+        select: {
+          posts: true,
+        },
+      },
+    },
+    orderBy: {
+      ticker: 'asc',
+    },
+    take: limit + 1,
+  });
+
+  const hasMore = symbols.length > limit;
+  const items = hasMore ? symbols.slice(0, -1) : symbols;
+
+  const formattedSymbols = items.map((symbol: any) => {
+    const rank = calculateTextRelevance(symbol.ticker, query);
 
     return {
-      id: i + 1,
-      ticker,
-      name,
-      kind: Math.random() > 0.6 ? 'STOCK' : 'CRYPTO',
-      exchange: Math.random() > 0.5 ? 'NASDAQ' : 'NYSE',
-      price: (Math.random() * 1000 + 10).toFixed(2),
-      change24h: ((Math.random() - 0.5) * 20).toFixed(2),
-      marketCap: `${(Math.random() * 100 + 1).toFixed(1)}B`,
-      mentionCount: Math.floor(Math.random() * 500),
+      id: symbol.id,
+      ticker: symbol.ticker,
+      name: symbol.ticker, // Using ticker as name since we don't have company names
+      kind: symbol.kind,
+      exchange: symbol.exchange,
+      price: null, // Would need external API for real-time prices
+      change24h: null,
+      marketCap: null,
+      mentionCount: symbol._count.posts,
       rank,
       highlights: {
-        ticker: extractHighlights(ticker, query),
-        name: extractHighlights(name, query),
+        ticker: extractHighlights(symbol.ticker, query),
+        name: extractHighlights(symbol.ticker, query),
       },
     };
   });
 
   // Sort by rank (descending)
-  mockSymbols.sort((a, b) => b.rank - a.rank);
+  formattedSymbols.sort((a: any, b: any) => b.rank - a.rank);
+
+  const nextCursor =
+    hasMore && items.length > 0
+      ? Buffer.from(
+          JSON.stringify({
+            id: items[items.length - 1]!.id,
+          })
+        ).toString('base64')
+      : null;
 
   return {
-    items: mockSymbols,
-    hasMore: mockSymbols.length === limit,
-    nextCursor: mockSymbols.length === limit ? `symbols_${Date.now()}` : null,
+    items: formattedSymbols,
+    hasMore,
+    nextCursor,
   };
 }
 
 /**
- * Calculate mock ranking score based on similarity
+ * Calculate text relevance score
  */
-function calculateMockRank(query: string, content: string): number {
+function calculateTextRelevance(content: string, query: string): number {
   const queryLower = query.toLowerCase();
   const contentLower = content.toLowerCase();
 
   // Exact match gets highest score
+  if (contentLower === queryLower) {
+    return 1.0;
+  }
+
+  // Contains match
   if (contentLower.includes(queryLower)) {
     const position = contentLower.indexOf(queryLower);
-    const exactMatchScore = position === 0 ? 1.0 : 0.8; // Beginning match is better
-    return Math.min(exactMatchScore + Math.random() * 0.1, 1.0);
+    return position === 0 ? 0.9 : 0.7; // Beginning match is better
   }
 
   // Partial match based on word overlap
@@ -344,7 +538,7 @@ function calculateMockRank(query: string, content: string): number {
   );
 
   const wordMatchScore = matchingWords.length / queryWords.length;
-  return Math.min(wordMatchScore * 0.7 + Math.random() * 0.2, 0.9);
+  return Math.min(wordMatchScore * 0.5, 0.6);
 }
 
 /**

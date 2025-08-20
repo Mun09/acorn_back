@@ -13,7 +13,6 @@ import {
   socialRouter,
   moderationRouter,
   searchRouter,
-  dbExampleRouter,
   generalRateLimit,
   errorHandler,
   notFoundHandler,
@@ -74,7 +73,6 @@ export function createServer(): Application {
   app.use('/api/social', socialRouter);
   app.use('/api/moderation', moderationRouter);
   app.use('/api/search', searchRouter);
-  app.use('/api/db-example', dbExampleRouter);
 
   app.get('/api/hello', (_req: Request, res: Response) => {
     res.status(200).json({

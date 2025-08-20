@@ -1,30 +1,61 @@
 /**
  * Database configuration and utilities
  */
-import { PrismaClient } from '@prisma/client';
+import { prisma } from './prisma';
 import { logger } from './logger';
 
-class DatabaseManager {
-  private static instance: PrismaClient;
+// Re-export prisma instance for convenience
+export { prisma };
 
-  public static getInstance(): PrismaClient {
-    if (!DatabaseManager.instance) {
-      DatabaseManager.instance = new PrismaClient({
-        log: ['query', 'info', 'warn', 'error'],
-      });
-
-      logger.info('Database connection initialized');
+// Database utility functions
+export class DatabaseManager {
+  /**
+   * Test database connection
+   */
+  public static async testConnection(): Promise<boolean> {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      logger.info('✅ Database connection successful');
+      return true;
+    } catch (error) {
+      logger.error('❌ Database connection failed:', error);
+      return false;
     }
-
-    return DatabaseManager.instance;
   }
 
+  /**
+   * Gracefully disconnect from database
+   */
   public static async disconnect(): Promise<void> {
-    if (DatabaseManager.instance) {
-      await DatabaseManager.instance.$disconnect();
+    try {
+      await prisma.$disconnect();
       logger.info('Database connection closed');
+    } catch (error) {
+      logger.error('Error closing database connection:', error);
+    }
+  }
+
+  /**
+   * Get database metrics
+   */
+  public static async getMetrics(): Promise<{
+    users: number;
+    posts: number;
+    symbols: number;
+    reactions: number;
+  }> {
+    try {
+      const [users, posts, symbols, reactions] = await Promise.all([
+        prisma.user.count(),
+        prisma.post.count(),
+        prisma.symbol.count(),
+        prisma.reaction.count(),
+      ]);
+
+      return { users, posts, symbols, reactions };
+    } catch (error) {
+      logger.error('Error getting database metrics:', error);
+      return { users: 0, posts: 0, symbols: 0, reactions: 0 };
     }
   }
 }
-
-export const prisma = DatabaseManager.getInstance();

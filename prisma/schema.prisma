@@ -1,33 +1,161 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            Int            @id @default(autoincrement())
+  handle        String         @unique
+  email         String         @unique
+  password      String
+  bio           String?
+  trustScore    Int            @default(0)
+  verifiedFlags Json?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  followers     Follow[]       @relation("UserFollowers")
+  following     Follow[]       @relation("UserFollowing")
+  notifications Notification[]
+  posts         Post[]
+  reactions     Reaction[]
+  reports       Report[]
 
   @@map("users")
 }
 
 model Post {
-  id        Int      @id @default(autoincrement())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  Int?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int          @id @default(autoincrement())
+  userId      Int
+  text        String
+  media       Json?
+  createdAt   DateTime     @default(now())
+  replyTo     Int?
+  quotePostId Int?
+  isHidden    Boolean      @default(false)
+  symbols     PostSymbol[]
+  quotePost   Post?        @relation("PostQuotes", fields: [quotePostId], references: [id])
+  quotes      Post[]       @relation("PostQuotes")
+  replyToPost Post?        @relation("PostReplies", fields: [replyTo], references: [id])
+  replies     Post[]       @relation("PostReplies")
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reactions   Reaction[]
+  reports     Report[]
 
+  @@index([userId])
+  @@index([replyTo])
+  @@index([quotePostId])
+  @@index([createdAt])
   @@map("posts")
+}
+
+model Symbol {
+  id       Int          @id @default(autoincrement())
+  ticker   String
+  exchange String
+  kind     SymbolKind
+  meta     Json?
+  posts    PostSymbol[]
+
+  @@unique([ticker, exchange])
+  @@index([kind])
+  @@map("symbols")
+}
+
+model PostSymbol {
+  postId   Int
+  symbolId Int
+  post     Post   @relation(fields: [postId], references: [id], onDelete: Cascade)
+  symbol   Symbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+
+  @@id([postId, symbolId])
+  @@map("post_symbols")
+}
+
+model Follow {
+  followerId Int
+  followeeId Int
+  followee   User @relation("UserFollowers", fields: [followeeId], references: [id], onDelete: Cascade)
+  follower   User @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followeeId])
+  @@index([followerId])
+  @@index([followeeId])
+  @@map("follows")
+}
+
+model Reaction {
+  id     Int          @id @default(autoincrement())
+  postId Int
+  userId Int
+  type   ReactionType
+  post   Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId, type])
+  @@index([postId])
+  @@index([userId])
+  @@map("reactions")
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int
+  kind      NotificationKind
+  payload   Json
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([readAt])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+model Report {
+  id         Int          @id @default(autoincrement())
+  postId     Int
+  reporterId Int
+  reason     ReportReason
+  details    String?
+  createdAt  DateTime     @default(now())
+  post       Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reporter   User         @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([reporterId])
+  @@index([reason])
+  @@index([createdAt])
+  @@map("reports")
+}
+
+enum SymbolKind {
+  STOCK
+  CRYPTO
+  ETF
+}
+
+enum ReactionType {
+  LIKE
+  BOOKMARK
+  BOOST
+}
+
+enum NotificationKind {
+  MENTION
+  REPLY
+  REACTION
+}
+
+enum ReportReason {
+  SPAM
+  SCAM
+  HARASSMENT
+  ILLEGAL
+  OTHER
 }

@@ -1,9 +1,13 @@
-import express, { Application, Request, Response, NextFunction } from 'express';
+import express, { Application, Request, Response } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import { logger } from './lib/logger';
 import { env } from './config/env';
+import { DatabaseManager } from './lib/database';
+import { authRouter } from './api/auth/router';
+import { generalRateLimit } from './api/middleware/rateLimit';
+import { errorHandler, notFoundHandler } from './api/middleware/error';
 
 export function createServer(): Application {
   const app = express();
@@ -32,17 +36,29 @@ export function createServer(): Application {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+  // Apply general rate limiting
+  app.use(generalRateLimit);
+
   // Health check endpoint
-  app.get('/health', (_req: Request, res: Response) => {
+  app.get('/health', async (_req: Request, res: Response) => {
+    const dbConnected = await DatabaseManager.testConnection();
+    const metrics = await DatabaseManager.getMetrics();
+
     res.status(200).json({
       status: 'OK',
       timestamp: new Date().toISOString(),
       environment: env.NODE_ENV,
       uptime: process.uptime(),
+      database: {
+        connected: dbConnected,
+        metrics,
+      },
     });
   });
 
   // API routes
+  app.use('/api/auth', authRouter);
+
   app.get('/api/hello', (_req: Request, res: Response) => {
     res.status(200).json({
       message: 'Hello, World!',
@@ -62,26 +78,11 @@ export function createServer(): Application {
     });
   });
 
-  // 404 handler
-  app.use((req: Request, res: Response) => {
-    res.status(404).json({
-      error: 'Not Found',
-      message: `Route ${req.originalUrl} not found`,
-      statusCode: 404,
-    });
-  });
+  // 404 handler for unmatched routes
+  app.use(notFoundHandler);
 
-  // Global error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    logger.error('Unhandled error:', err);
-
-    res.status(500).json({
-      error: 'Internal Server Error',
-      message:
-        env.NODE_ENV === 'development' ? err.message : 'Something went wrong',
-      statusCode: 500,
-    });
-  });
+  // Global error handler (must be last)
+  app.use(errorHandler);
 
   return app;
 }

@@ -3,15 +3,15 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '../../lib/prisma';
 import { JwtService } from '../../lib/jwt';
 import { authenticateToken } from '../middleware/auth';
-import { authRateLimit } from '../middleware/rateLimit';
+import { authRateLimit, highFrequencyRateLimit } from '../middleware/rateLimit';
 import { asyncHandler } from '../middleware/error';
 import { signupRequestSchema, loginRequestSchema } from '../validators';
 import { logger } from '../../lib/logger';
 
 const router = Router();
 
-// Apply rate limiting to all auth routes
-router.use(authRateLimit);
+// Apply strict rate limiting to signup/login routes only
+// Other routes will have their own rate limiting applied individually
 
 // Request validation schemas - using common validators
 const signupSchema = signupRequestSchema;
@@ -47,6 +47,7 @@ function sendError(
  */
 router.post(
   '/signup',
+  authRateLimit, // Strict rate limiting for signup
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     // Validate request body
     const validatedData = signupSchema.parse(req.body);
@@ -118,6 +119,7 @@ router.post(
  */
 router.post(
   '/login',
+  authRateLimit, // Strict rate limiting for login
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     // Validate request body
     const validatedData = loginSchema.parse(req.body);
@@ -176,6 +178,7 @@ router.post(
  */
 router.post(
   '/refresh',
+  highFrequencyRateLimit, // More lenient rate limiting for refresh tokens
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const { refreshToken } = req.body;
 
@@ -207,6 +210,7 @@ router.post(
  */
 router.post(
   '/logout',
+  highFrequencyRateLimit, // More lenient for logout
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const { refreshToken } = req.body;
 
@@ -230,6 +234,7 @@ router.post(
  */
 router.post(
   '/logout-all',
+  authRateLimit, // Stricter rate limiting for security-sensitive operation
   authenticateToken,
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     try {
@@ -262,6 +267,7 @@ router.post(
  */
 router.get(
   '/me',
+  highFrequencyRateLimit, // More lenient rate limiting for user info
   authenticateToken,
   async (req: Request, res: Response): Promise<void> => {
     try {

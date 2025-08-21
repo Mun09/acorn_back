@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
 import { authenticateToken, optionalAuth } from '../middleware/auth';
+import {
+  postRateLimit,
+  readOnlyRateLimit,
+  generalRateLimit,
+} from '../middleware/rateLimit';
 import { logger } from '../../lib/logger';
 import { extractSymbolsFromText } from '../../lib/symbols';
 import {
@@ -40,7 +45,7 @@ const feedQuerySchema = z.object({
  * POST /posts
  * Create a new post with symbol parsing
  */
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', postRateLimit, authenticateToken, async (req, res) => {
   try {
     const { text, media } = createPostSchema.parse(req.body);
     const userId = req.user!.id;
@@ -136,7 +141,7 @@ router.post('/', authenticateToken, async (req, res) => {
  * GET /posts/:id
  * Get post details with author and reaction counts
  */
-router.get('/:id', optionalAuth, async (req, res) => {
+router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
   try {
     const postId = parseInt(req.params['id']!);
 
@@ -234,7 +239,7 @@ router.get('/:id', optionalAuth, async (req, res) => {
  * mode=new: Order by creation time
  * mode=hot: Order by reaction score with time decay (last 24h)
  */
-router.get('/', optionalAuth, async (req, res) => {
+router.get('/', readOnlyRateLimit, optionalAuth, async (req, res) => {
   try {
     const { mode, cursor, limit } = feedQuerySchema.parse(req.query);
 
@@ -498,120 +503,125 @@ router.get('/', optionalAuth, async (req, res) => {
  * POST /posts/:id/react
  * Toggle reaction on a post (LIKE, BOOKMARK, BOOST)
  */
-router.post('/:id/react', authenticateToken, async (req, res) => {
-  try {
-    const postId = parseInt(req.params['id']!);
-    const { type } = reactToPostSchema.parse(req.body);
-    const userId = req.user!.id;
+router.post(
+  '/:id/react',
+  generalRateLimit,
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const postId = parseInt(req.params['id']!);
+      const { type } = reactToPostSchema.parse(req.body);
+      const userId = req.user!.id;
 
-    if (isNaN(postId)) {
-      return res.status(400).json({
-        error: 'Invalid post ID',
-      });
-    }
-
-    // Check if post exists
-    const post = await prisma.post.findUnique({
-      where: { id: postId },
-      select: { id: true },
-    });
-
-    if (!post) {
-      return res.status(404).json({
-        error: 'Post not found',
-      });
-    }
-
-    // Check if reaction already exists
-    const existingReaction = await prisma.reaction.findUnique({
-      where: {
-        postId_userId_type: {
-          postId,
-          userId,
-          type,
-        },
-      },
-    });
-
-    let action: 'added' | 'removed';
-
-    if (existingReaction) {
-      // Remove existing reaction (toggle off)
-      await prisma.reaction.delete({
-        where: {
-          id: existingReaction.id,
-        },
-      });
-      action = 'removed';
-    } else {
-      // Add new reaction (toggle on)
-      await prisma.reaction.create({
-        data: {
-          postId,
-          userId,
-          type,
-        },
-      });
-      action = 'added';
-
-      // Create reaction notification
-      const postOwner = await prisma.post.findUnique({
-        where: { id: postId },
-        select: { userId: true },
-      });
-
-      if (postOwner) {
-        await createReactionNotification(
-          postOwner.userId,
-          userId,
-          req.user!.handle,
-          postId,
-          type
-        );
+      if (isNaN(postId)) {
+        return res.status(400).json({
+          error: 'Invalid post ID',
+        });
       }
-    }
 
-    // Get updated reaction counts
-    const reactionCounts = await prisma.reaction.groupBy({
-      by: ['type'],
-      where: { postId },
-      _count: { type: true },
-    });
+      // Check if post exists
+      const post = await prisma.post.findUnique({
+        where: { id: postId },
+        select: { id: true },
+      });
 
-    const counts = reactionCounts.reduce(
-      (
-        acc: Record<string, number>,
-        group: { type: string; _count: { type: number } }
-      ) => {
-        acc[group.type] = group._count.type;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
+      if (!post) {
+        return res.status(404).json({
+          error: 'Post not found',
+        });
+      }
 
-    return res.json({
-      success: true,
-      data: {
-        action,
-        type,
-        reactionCounts: counts,
-      },
-    });
-  } catch (error) {
-    logger.error('Error toggling reaction:', error);
+      // Check if reaction already exists
+      const existingReaction = await prisma.reaction.findUnique({
+        where: {
+          postId_userId_type: {
+            postId,
+            userId,
+            type,
+          },
+        },
+      });
 
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({
-        error: 'Validation error',
-        details: error.issues,
+      let action: 'added' | 'removed';
+
+      if (existingReaction) {
+        // Remove existing reaction (toggle off)
+        await prisma.reaction.delete({
+          where: {
+            id: existingReaction.id,
+          },
+        });
+        action = 'removed';
+      } else {
+        // Add new reaction (toggle on)
+        await prisma.reaction.create({
+          data: {
+            postId,
+            userId,
+            type,
+          },
+        });
+        action = 'added';
+
+        // Create reaction notification
+        const postOwner = await prisma.post.findUnique({
+          where: { id: postId },
+          select: { userId: true },
+        });
+
+        if (postOwner) {
+          await createReactionNotification(
+            postOwner.userId,
+            userId,
+            req.user!.handle,
+            postId,
+            type
+          );
+        }
+      }
+
+      // Get updated reaction counts
+      const reactionCounts = await prisma.reaction.groupBy({
+        by: ['type'],
+        where: { postId },
+        _count: { type: true },
+      });
+
+      const counts = reactionCounts.reduce(
+        (
+          acc: Record<string, number>,
+          group: { type: string; _count: { type: number } }
+        ) => {
+          acc[group.type] = group._count.type;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          action,
+          type,
+          reactionCounts: counts,
+        },
+      });
+    } catch (error) {
+      logger.error('Error toggling reaction:', error);
+
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: 'Validation error',
+          details: error.issues,
+        });
+      }
+
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Failed to toggle reaction',
       });
     }
-
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: 'Failed to toggle reaction',
-    });
   }
-});
+);
 
 export default router;

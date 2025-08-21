@@ -13,6 +13,7 @@ export { default as feedRouter } from './feed/router';
 export { default as socialRouter } from './social/router';
 export { default as moderationRouter } from './moderation/router';
 export { default as searchRouter } from './search/router';
+export { default as notificationsRouter } from './notifications/router';
 
 // Middleware exports
 export { generalRateLimit } from './middleware/rateLimit';

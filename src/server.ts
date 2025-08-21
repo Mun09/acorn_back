@@ -2,6 +2,7 @@ import express, { Application, Request, Response } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
 import { logger } from './lib/logger';
 import { env } from './config/env';
 import { DatabaseManager } from './lib/database';
@@ -13,6 +14,7 @@ import {
   socialRouter,
   moderationRouter,
   searchRouter,
+  notificationsRouter,
   generalRateLimit,
   errorHandler,
   notFoundHandler,
@@ -45,6 +47,9 @@ export function createServer(): Application {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+  // Cookie parsing middleware
+  app.use(cookieParser());
+
   // Apply general rate limiting
   app.use(generalRateLimit);
 
@@ -73,6 +78,7 @@ export function createServer(): Application {
   app.use('/api/social', socialRouter);
   app.use('/api/moderation', moderationRouter);
   app.use('/api/search', searchRouter);
+  app.use('/api/notifications', notificationsRouter);
 
   app.get('/api/hello', (_req: Request, res: Response) => {
     res.status(200).json({

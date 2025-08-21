@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { authenticateToken } from '../middleware/auth';
+import { readOnlyRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
 
 const router = Router();
@@ -77,6 +78,7 @@ function calculateSymbolMatchBonus(
  */
 router.get(
   '/',
+  readOnlyRateLimit, // Lenient rate limiting for feed reads
   authenticateToken,
   asyncHandler(async (req, res) => {
     const { mode, cursor, limit } = validateData(feedQuerySchema, req.query);
@@ -526,6 +528,7 @@ function calculateInitialReactionScore(
  */
 router.get(
   '/debug',
+  readOnlyRateLimit, // Lenient rate limiting for debug endpoint
   authenticateToken,
   asyncHandler(async (req, res) => {
     const userId = req.user!.id;

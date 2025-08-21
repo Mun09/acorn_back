@@ -120,38 +120,58 @@ function getClientKey(req: Request): string {
 // Pre-configured rate limiters for common use cases
 
 /**
- * General API rate limiter: 60 requests per minute
+ * General API rate limiter: 200 requests per minute (increased for normal API usage)
  */
 export const generalRateLimit = createRateLimit({
   windowMs: 60 * 1000, // 1 minute
-  maxRequests: 60,
+  maxRequests: 200,
   message: 'Too many requests from this IP, please try again in a minute',
 });
 
 /**
- * Auth rate limiter: 5 attempts per 15 minutes
+ * High frequency rate limiter for frequently called endpoints: 500 requests per minute
+ * Use for endpoints like /me, /refresh, health checks, etc.
+ */
+export const highFrequencyRateLimit = createRateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  maxRequests: 500,
+  message: 'Too many requests, please slow down',
+});
+
+/**
+ * Auth rate limiter: 10 attempts per 15 minutes (increased slightly)
  */
 export const authRateLimit = createRateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  maxRequests: 5,
+  maxRequests: 10,
   message: 'Too many authentication attempts, please try again later',
   skipSuccessfulRequests: true, // Don't count successful logins
 });
 
 /**
- * Strict rate limiter for sensitive operations: 10 requests per hour
+ * Strict rate limiter for sensitive operations: 30 requests per hour (increased)
  */
 export const strictRateLimit = createRateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  maxRequests: 10,
+  maxRequests: 30,
   message: 'Rate limit exceeded for sensitive operation',
 });
 
 /**
- * Post creation rate limiter: 20 posts per hour
+ * Post creation rate limiter: 50 posts per hour (increased)
  */
 export const postRateLimit = createRateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  maxRequests: 20,
+  maxRequests: 50,
   message: 'Too many posts created, please wait before posting again',
+});
+
+/**
+ * Lenient rate limiter for read-only operations: 1000 requests per hour
+ * Use for data fetching endpoints that don't modify state
+ */
+export const readOnlyRateLimit = createRateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  maxRequests: 1000,
+  message: 'Too many read requests, please slow down',
 });

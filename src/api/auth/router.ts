@@ -91,9 +91,9 @@ router.post(
       },
     });
 
-    // Generate JWT token
-    const tokenResult = JwtService.signAccessToken({
-      userId: user.id,
+    // Generate JWT tokens (both access and refresh)
+    const tokens = await JwtService.generateTokens({
+      id: user.id,
       email: user.email,
       handle: user.handle,
     });
@@ -104,8 +104,9 @@ router.post(
       message: 'User created successfully',
       data: {
         user,
-        token: tokenResult.token,
-        expiresIn: tokenResult.expiresIn,
+        accessToken: tokens.accessToken.token,
+        refreshToken: tokens.refreshToken.token,
+        expiresIn: tokens.accessToken.expiresIn,
       },
     });
   })
@@ -139,9 +140,9 @@ router.post(
       return;
     }
 
-    // Generate JWT token
-    const tokenResult = JwtService.signAccessToken({
-      userId: user.id,
+    // Generate JWT tokens (both access and refresh)
+    const tokens = await JwtService.generateTokens({
+      id: user.id,
       email: user.email,
       handle: user.handle,
     });
@@ -161,10 +162,97 @@ router.post(
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
         },
-        token: tokenResult.token,
-        expiresIn: tokenResult.expiresIn,
+        accessToken: tokens.accessToken.token,
+        refreshToken: tokens.refreshToken.token,
+        expiresIn: tokens.accessToken.expiresIn,
       },
     });
+  })
+);
+
+/**
+ * POST /auth/refresh
+ * Refresh access token using refresh token
+ */
+router.post(
+  '/refresh',
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      sendError(res, 400, 'Bad Request', 'Refresh token is required');
+      return;
+    }
+
+    try {
+      const newAccessToken = await JwtService.refreshAccessToken(refreshToken);
+
+      res.status(200).json({
+        message: 'Token refreshed successfully',
+        data: {
+          accessToken: newAccessToken.token,
+          expiresIn: newAccessToken.expiresIn,
+        },
+      });
+    } catch (error) {
+      logger.error('Token refresh error:', error);
+      sendError(res, 401, 'Unauthorized', 'Invalid or expired refresh token');
+    }
+  })
+);
+
+/**
+ * POST /auth/logout
+ * Logout user and revoke refresh token
+ */
+router.post(
+  '/logout',
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { refreshToken } = req.body;
+
+    if (refreshToken) {
+      try {
+        await JwtService.revokeRefreshToken(refreshToken);
+      } catch (error) {
+        logger.warn('Failed to revoke refresh token during logout:', error);
+      }
+    }
+
+    res.status(200).json({
+      message: 'Logged out successfully',
+    });
+  })
+);
+
+/**
+ * POST /auth/logout-all
+ * Logout user from all devices (revoke all refresh tokens)
+ */
+router.post(
+  '/logout-all',
+  authenticateToken,
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        sendError(res, 401, 'Unauthorized', 'User not found');
+        return;
+      }
+
+      await JwtService.revokeAllRefreshTokens(user.id);
+
+      res.status(200).json({
+        message: 'Logged out from all devices successfully',
+      });
+    } catch (error) {
+      logger.error('Logout all error:', error);
+      sendError(
+        res,
+        500,
+        'Internal Server Error',
+        'Failed to logout from all devices'
+      );
+    }
   })
 );
 

@@ -1,0 +1,10 @@
+packages:
+  - '.'
+  # Future packages can be added here
+  # - 'packages/*'
+  # - 'apps/*'
+
+ignoredBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - prisma

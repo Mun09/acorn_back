@@ -43,7 +43,7 @@ acorn/
 2. Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
 3. Copy and configure environment variables:
@@ -59,17 +59,17 @@ cp .env.example .env
 
 ## 📋 Available Scripts
 
-- `npm run dev` - Start development server with hot reload
-- `npm run build` - Build the project for production
-- `npm run start` - Start the production server
-- `npm run lint` - Run ESLint
-- `npm run lint:fix` - Run ESLint with auto-fix
-- `npm run format` - Format code with Prettier
-- `npm run format:check` - Check code formatting
-- `npm run type-check` - Run TypeScript type checking
-- `npm run prisma:generate` - Generate Prisma client
-- `npm run prisma:migrate` - Run database migrations
-- `npm run prisma:studio` - Open Prisma Studio
+- `pnpm run dev` - Start development server with hot reload
+- `pnpm run build` - Build the project for production
+- `pnpm run start` - Start the production server
+- `pnpm run lint` - Run ESLint
+- `pnpm run lint:fix` - Run ESLint with auto-fix
+- `pnpm run format` - Format code with Prettier
+- `pnpm run format:check` - Check code formatting
+- `pnpm run type-check` - Run TypeScript type checking
+- `pnpm run prisma:generate` - Generate Prisma client
+- `pnpm run prisma:migrate` - Run database migrations
+- `pnpm run prisma:studio` - Open Prisma Studio
 
 ## 🚀 Getting Started
 
@@ -85,9 +85,60 @@ pnpm install
 pnpm dev
 ```
 
-3. The server will be running at `http://localhost:3000`
+3. The server will be running at `http://localhost:3001`
 
-## 🗄️ Database Setup
+## � Docker Development
+
+### Quick Start with Docker
+
+1. **Start development environment:**
+
+```bash
+pnpm docker:dev
+```
+
+2. **Access services:**
+   - API Server: http://localhost:3001
+   - pgAdmin: http://localhost:5050 (admin@acorn.com / admin123)
+   - PostgreSQL: localhost:5432
+   - Redis: localhost:6379
+
+3. **Stop services:**
+
+```bash
+pnpm docker:dev:down
+```
+
+### Docker Commands
+
+- `pnpm docker:dev` - Start development environment
+- `pnpm docker:dev:down` - Stop development environment
+- `pnpm docker:prod` - Start production environment
+- `pnpm docker:prod:down` - Stop production environment
+- `pnpm docker:logs` - View service logs
+- `pnpm docker:clean` - Clean up Docker resources
+
+### Manual Docker Setup
+
+1. **Copy environment file:**
+
+```bash
+cp .env.example .env
+```
+
+2. **Build and start services:**
+
+```bash
+docker-compose up --build
+```
+
+3. **Run database migrations:**
+
+```bash
+docker-compose exec api pnpm prisma:migrate
+```
+
+## �🗄️ Database Setup
 
 This project uses Prisma as the database toolkit. To set up your database:
 
@@ -95,7 +146,7 @@ This project uses Prisma as the database toolkit. To set up your database:
 2. Generate Prisma client:
 
 ```bash
-npx prisma generate
+pnpm prisma:generate
 ```
 
 3. Run database migrations:

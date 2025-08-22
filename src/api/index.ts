@@ -7,7 +7,7 @@
 export { authRouter } from './auth/router';
 
 // Core API routes
-export { default as symbolsRouter } from './symbols';
+export { default as symbolsRouter } from './symbols/router';
 export { default as postsRouter } from './posts/router';
 export { default as feedRouter } from './feed/router';
 export { default as socialRouter } from './social/router';

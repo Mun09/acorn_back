@@ -15,6 +15,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
+    "seed:symbols": "npx ts-node src/scripts/seed-stock-symbols.ts",
     "docker:dev": "docker-compose up --build",
     "docker:dev:down": "docker-compose down",
     "docker:prod": "docker-compose -f docker-compose.prod.yml up --build -d",

@@ -77,30 +77,23 @@ router.post('/', postRateLimit, authenticateToken, async (req, res) => {
 
       // Process symbols if any were found
       if (extractedSymbols.length > 0) {
-        // Upsert symbols and create PostSymbol relationships
+        // 기존 심볼과만 연결 (새로운 심볼은 생성하지 않음)
         for (const extractedSymbol of extractedSymbols) {
-          const symbol = await tx.symbol.upsert({
+          const existingSymbol = await tx.symbol.findFirst({
             where: {
-              ticker_exchange: {
-                ticker: extractedSymbol.ticker,
-                exchange: extractedSymbol.exchange || 'GLOBAL',
-              },
-            },
-            update: {},
-            create: {
               ticker: extractedSymbol.ticker,
-              exchange: extractedSymbol.exchange || 'GLOBAL',
-              kind: extractedSymbol.kind || 'STOCK',
-              meta: null,
             },
           });
 
-          await tx.postSymbol.create({
-            data: {
-              postId: post.id,
-              symbolId: symbol.id,
-            },
-          });
+          // 기존 심볼이 있을 때만 연결
+          if (existingSymbol) {
+            await tx.postSymbol.create({
+              data: {
+                postId: post.id,
+                symbolId: existingSymbol.id,
+              },
+            });
+          }
         }
       }
 

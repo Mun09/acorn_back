@@ -157,6 +157,8 @@ router.get(
     const items = hasMore ? posts.slice(0, -1) : posts;
     const nextCursor = hasMore ? items[items.length - 1].id.toString() : null;
 
+    const currentUserId = req.user?.id;
+
     // Transform posts with reaction counts
     const transformedPosts = items.map((post: any) => {
       const reactionCounts = {
@@ -171,6 +173,13 @@ router.get(
         }
       });
 
+      // Get user's reactions to this post
+      const userReactions = currentUserId
+        ? post.reactions
+            .filter((r: { userId: number }) => r.userId === currentUserId)
+            .map((r: { type: string }) => r.type)
+        : [];
+
       return {
         id: post.id,
         text: post.text,
@@ -178,6 +187,7 @@ router.get(
         createdAt: post.createdAt,
         user: post.user,
         reactionCounts,
+        userReactions,
         replyCount: post._count.replies,
         symbols: post.symbols.map((ps: any) => ps.symbol),
       };

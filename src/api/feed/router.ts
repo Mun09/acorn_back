@@ -194,6 +194,11 @@ async function getFollowingFeed(
       {} as Record<string, number>
     );
 
+    // Get user's reactions to this post
+    const userReactions = post.reactions
+      .filter((r: { userId: number }) => r.userId === userId)
+      .map((r: { type: string }) => r.type);
+
     return {
       id: post.id,
       text: post.text,
@@ -216,6 +221,7 @@ async function getFollowingFeed(
         exchange: ps.symbol.exchange,
       })),
       reactionCounts,
+      userReactions,
       isFollowing: true, // By definition, these are from followed users
     };
   });
@@ -325,6 +331,11 @@ async function getForYouFeed(
 
     const postSymbols = post.symbols.map((ps: any) => ps.symbol.ticker);
 
+    // Get user's reactions to this post
+    const userReactions = post.reactions
+      .filter((r: { userId: number }) => r.userId === userId)
+      .map((r: { type: string }) => r.type);
+
     // Calculate algorithm score
     const score = calculateForYouScore(
       post.createdAt,
@@ -359,6 +370,7 @@ async function getForYouFeed(
         exchange: ps.symbol.exchange,
       })),
       reactionCounts,
+      userReactions,
       score,
       scoreBreakdown: {
         initialReactionScore: calculateInitialReactionScore(

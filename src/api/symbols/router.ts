@@ -153,6 +153,7 @@ router.get(
           reactions: {
             select: {
               type: true,
+              userId: true,
             },
           },
           _count: {
@@ -164,6 +165,8 @@ router.get(
         },
       });
 
+      const userId = req.user?.id;
+
       // 반응 카운트 계산
       const postsWithCounts = posts.map(post => {
         const reactionCounts = post.reactions.reduce(
@@ -174,10 +177,18 @@ router.get(
           {} as Record<string, number>
         );
 
+        // Get user's reactions to this post
+        const userReactions = userId
+          ? post.reactions
+              .filter((r: { userId: number }) => r.userId === userId)
+              .map((r: { type: string }) => r.type)
+          : [];
+
         return {
           ...post,
           author: post.user, // user를 author로 매핑
           reactionCounts,
+          userReactions,
           reactions: undefined, // 원본 reactions 제거
           user: undefined, // 원본 user 제거
         };

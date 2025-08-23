@@ -19,6 +19,7 @@ const router = Router();
 // Post creation schema
 const createPostSchema = z.object({
   text: z.string().min(1).max(280),
+  replyTo: z.number().optional(),
   media: z
     .array(
       z.object({
@@ -41,13 +42,20 @@ const feedQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(50).default(20),
 });
 
+// Trending query schema
+const trendingQuerySchema = z.object({
+  sort: z.enum(['hot', 'rising', 'recent']).default('hot'),
+  cursor: z.string().optional(),
+  limit: z.coerce.number().min(1).max(50).default(20),
+});
+
 /**
  * POST /posts
  * Create a new post with symbol parsing
  */
 router.post('/', postRateLimit, authenticateToken, async (req, res) => {
   try {
-    const { text, media } = createPostSchema.parse(req.body);
+    const { text, media, replyTo } = createPostSchema.parse(req.body);
     const userId = req.user!.id;
 
     // Extract symbols from text
@@ -61,6 +69,7 @@ router.post('/', postRateLimit, authenticateToken, async (req, res) => {
           userId,
           text,
           media: media ? JSON.stringify(media) : null,
+          replyTo,
         },
         include: {
           user: {
@@ -131,6 +140,385 @@ router.post('/', postRateLimit, authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /posts/bookmarks
+ * Get user's bookmarked posts
+ */
+router.get(
+  '/bookmarks',
+  readOnlyRateLimit,
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const userId = req.user!.id;
+
+      // Query 파라미터 검증
+      const querySchema = z.object({
+        cursor: z.string().optional(),
+        limit: z.coerce.number().min(1).max(50).default(20),
+      });
+
+      const { cursor, limit } = querySchema.parse(req.query);
+
+      let whereClause: any = {
+        isHidden: false,
+        reactions: {
+          some: {
+            userId: userId,
+            type: 'BOOKMARK',
+          },
+        },
+      };
+
+      // Add cursor filtering if provided
+      if (cursor) {
+        try {
+          const cursorData = JSON.parse(
+            Buffer.from(cursor as string, 'base64').toString()
+          );
+          whereClause.id = {
+            lt: cursorData.id,
+          };
+        } catch (cursorError) {
+          return res.status(400).json({
+            error: 'Invalid cursor format',
+            message: 'Cursor must be a valid base64 encoded JSON string',
+          });
+        }
+      }
+
+      console.log('Bookmark whereClause:', whereClause);
+
+      // Get bookmarked posts
+      const posts = await prisma.post.findMany({
+        where: whereClause,
+        include: {
+          user: {
+            select: {
+              id: true,
+              handle: true,
+              bio: true,
+              trustScore: true,
+              verifiedFlags: true,
+            },
+          },
+          symbols: {
+            include: {
+              symbol: true,
+            },
+          },
+          reactions: {
+            select: {
+              type: true,
+              userId: true,
+            },
+          },
+          _count: {
+            select: {
+              reactions: true,
+              replies: true,
+            },
+          },
+        },
+        orderBy: [
+          {
+            reactions: {
+              _count: 'desc',
+            },
+          },
+          {
+            createdAt: 'desc',
+          },
+        ],
+        take: Number(limit) + 1,
+      });
+
+      const hasNextPage = posts.length > Number(limit);
+      const resultPosts = hasNextPage ? posts.slice(0, -1) : posts;
+
+      // Format posts
+      const formattedPosts = resultPosts.map((post: any) => {
+        // Calculate reaction counts
+        const reactionCounts = post.reactions.reduce(
+          (acc: Record<string, number>, reaction: { type: string }) => {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        // Get user's reactions
+        const userReactions = post.reactions
+          .filter((r: { userId: number }) => r.userId === userId)
+          .map((r: { type: string }) => r.type);
+
+        return {
+          ...post,
+          author: post.user,
+          media: post.media ? JSON.parse(post.media as string) : null,
+          reactionCounts,
+          userReactions,
+          reactions: undefined,
+        };
+      });
+
+      const nextCursor =
+        hasNextPage && formattedPosts.length > 0
+          ? Buffer.from(
+              JSON.stringify({
+                id: formattedPosts[formattedPosts.length - 1]!.id,
+                createdAt: formattedPosts[formattedPosts.length - 1]!.createdAt,
+              })
+            ).toString('base64')
+          : null;
+
+      return res.json({
+        success: true,
+        data: {
+          posts: formattedPosts,
+          nextCursor,
+          hasNextPage,
+        },
+      });
+    } catch (error) {
+      logger.error('Error fetching bookmarked posts:', error);
+
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          error: 'Validation error',
+          details: error.issues,
+          message: 'Invalid query parameters',
+        });
+      }
+
+      return res.status(500).json({
+        error: 'Internal server error',
+        message: 'Failed to fetch bookmarked posts',
+      });
+    }
+  }
+);
+
+/**
+ * GET /posts/trending
+ * Get trending posts with symbols
+ * sort=hot: Most popular posts in last 24h (default)
+ * sort=rising: Fast-growing posts in last 6h
+ * sort=recent: Recent posts with symbols only
+ */
+router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
+  try {
+    logger.info('Trending API called with query:', req.query);
+
+    const { sort, cursor, limit } = trendingQuerySchema.parse(req.query);
+
+    logger.info('Parsed parameters:', { sort, cursor: !!cursor, limit });
+
+    let whereClause: any = {
+      isHidden: false,
+      // Only show posts that have symbols
+      symbols: {
+        some: {},
+      },
+    };
+
+    // Add cursor filtering if provided
+    if (cursor) {
+      try {
+        const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+        whereClause.id = {
+          lt: cursorData.id,
+        };
+        logger.info('Applied cursor filter:', cursorData);
+      } catch (cursorError) {
+        logger.error('Error parsing cursor:', cursorError);
+        return res.status(400).json({
+          error: 'Invalid cursor format',
+          message: 'Cursor must be a valid base64 encoded JSON string',
+        });
+      }
+    }
+
+    // For hot and rising modes, only show recent posts
+    if (sort === 'hot') {
+      whereClause.createdAt = {
+        gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+      };
+    } else if (sort === 'rising') {
+      whereClause.createdAt = {
+        gte: new Date(Date.now() - 12 * 60 * 60 * 1000), // Last 12 hours
+      };
+    }
+
+    logger.info('Final where clause:', JSON.stringify(whereClause, null, 2));
+
+    // Get posts with reactions and replies
+    const posts = await prisma.post.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            id: true,
+            handle: true,
+            bio: true,
+            trustScore: true,
+            verifiedFlags: true,
+          },
+        },
+        symbols: {
+          include: {
+            symbol: true,
+          },
+        },
+        reactions: {
+          select: {
+            type: true,
+            userId: true,
+          },
+        },
+        _count: {
+          select: {
+            reactions: true,
+            replies: true,
+          },
+        },
+      },
+      take: limit + 1,
+    });
+
+    logger.info('Found posts:', posts.length);
+
+    // Calculate scores and sort
+    const scoredPosts = posts
+      .map((post: any) => {
+        const reactionCounts = post.reactions.reduce(
+          (acc: Record<string, number>, reaction: { type: string }) => {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+            return acc;
+          },
+          { LIKE: 0, BOOST: 0, BOOKMARK: 0 }
+        );
+
+        const likes = reactionCounts.LIKE || 0;
+        const boosts = reactionCounts.BOOST || 0;
+        const bookmarks = reactionCounts.BOOKMARK || 0;
+        const replies = post._count.replies || 0;
+
+        // Calculate engagement score
+        const engagementScore =
+          likes * 1.0 + boosts * 3.0 + bookmarks * 2.0 + replies * 1.5;
+
+        // Apply time decay
+        const hoursOld =
+          (Date.now() - new Date(post.createdAt).getTime()) / (1000 * 60 * 60);
+        const timeDecayFactor = sort === 'hot' ? 24 : sort === 'rising' ? 6 : 1;
+        const timeDecay = Math.exp(-hoursOld / timeDecayFactor);
+
+        const score = engagementScore * timeDecay;
+
+        // Calculate reaction counts for response
+        const reactionCountsForResponse = post.reactions.reduce(
+          (acc: Record<string, number>, reaction: { type: string }) => {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        // Check if current user has reacted
+        const userReactions = req.user
+          ? post.reactions
+              .filter(
+                (r: { userId: number; type: string }) =>
+                  r.userId === req.user!.id
+              )
+              .map((r: { type: string }) => r.type)
+          : [];
+
+        return {
+          ...post,
+          author: post.user,
+          media: post.media ? JSON.parse(post.media as string) : null,
+          reactionCounts: reactionCountsForResponse,
+          userReactions,
+          reactions: undefined,
+          score,
+          engagementScore,
+        };
+      })
+      .filter((post: any) => {
+        // For rising posts, only show posts with some engagement
+        if (sort === 'rising') {
+          return post.engagementScore > 0;
+        }
+        return true;
+      })
+      .sort((a: any, b: any) => {
+        // Sort by score, then by creation time
+        if (sort === 'recent') {
+          return (
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        }
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+        return (
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      })
+      .slice(0, limit + 1);
+
+    const hasNextPage = scoredPosts.length > limit;
+    const resultPosts = hasNextPage ? scoredPosts.slice(0, -1) : scoredPosts;
+
+    logger.info('Result posts count:', resultPosts.length);
+
+    const nextCursor =
+      hasNextPage && resultPosts.length > 0
+        ? Buffer.from(
+            JSON.stringify({
+              id: resultPosts[resultPosts.length - 1]!.id,
+              createdAt: resultPosts[resultPosts.length - 1]!.createdAt,
+            })
+          ).toString('base64')
+        : null;
+
+    const response = {
+      success: true,
+      data: {
+        posts: resultPosts,
+        nextCursor,
+        hasNextPage,
+      },
+    };
+
+    logger.info('Sending response with posts count:', resultPosts.length);
+    return res.json(response);
+  } catch (error) {
+    logger.error('Error fetching trending posts:', error);
+    logger.error('Error stack:', (error as Error).stack);
+
+    if (error instanceof z.ZodError) {
+      logger.error('Zod validation error details:', error.issues);
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.issues,
+        message: 'Invalid query parameters',
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to fetch trending posts',
+      details:
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).message
+          : undefined,
+    });
+  }
+});
+
+/**
  * GET /posts/:id
  * Get post details with author and reaction counts
  */
@@ -165,6 +553,34 @@ router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
           select: {
             type: true,
             userId: true,
+          },
+        },
+        replies: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                handle: true,
+                bio: true,
+                trustScore: true,
+                verifiedFlags: true,
+              },
+            },
+            reactions: {
+              select: {
+                type: true,
+                userId: true,
+              },
+            },
+            _count: {
+              select: {
+                reactions: true,
+                replies: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: 'asc',
           },
         },
         _count: {
@@ -203,6 +619,30 @@ router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
           .map((r: { type: string }) => r.type)
       : [];
 
+    // Process replies with reaction counts
+    const processedReplies = post.replies.map((reply: any) => {
+      const replyReactionCounts = reply.reactions.reduce(
+        (acc: Record<string, number>, reaction: { type: string }) => {
+          acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      const replyUserReactions = req.user
+        ? reply.reactions
+            .filter((r: { userId: number }) => r.userId === req.user!.id)
+            .map((r: { type: string }) => r.type)
+        : [];
+
+      return {
+        ...reply,
+        reactionCounts: replyReactionCounts,
+        userReactions: replyUserReactions,
+        reactions: undefined, // Remove raw reactions array
+      };
+    });
+
     const result = {
       ...post,
       media: (post as any).media
@@ -210,6 +650,7 @@ router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
         : null,
       reactionCounts,
       userReactions,
+      replies: processedReplies,
       reactions: undefined, // Remove raw reactions array
     };
 
@@ -488,6 +929,226 @@ router.get('/', readOnlyRateLimit, optionalAuth, async (req, res) => {
     return res.status(500).json({
       error: 'Internal server error',
       message: 'Failed to fetch posts feed',
+    });
+  }
+});
+
+/**
+ * GET /posts/trending
+ * Get trending posts with symbols
+ * sort=hot: Most popular posts in last 24h (default)
+ * sort=rising: Fast-growing posts in last 6h
+ * sort=recent: Recent posts with symbols only
+ */
+router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
+  try {
+    logger.info('Trending API called with query:', req.query);
+
+    const { sort, cursor, limit } = trendingQuerySchema.parse(req.query);
+
+    logger.info('Parsed parameters:', { sort, cursor: !!cursor, limit });
+
+    let whereClause: any = {
+      isHidden: false,
+      // Only show posts that have symbols
+      symbols: {
+        some: {},
+      },
+    };
+
+    // Add cursor filtering if provided
+    if (cursor) {
+      try {
+        const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+        whereClause.id = {
+          lt: cursorData.id,
+        };
+        logger.info('Applied cursor filter:', cursorData);
+      } catch (cursorError) {
+        logger.error('Error parsing cursor:', cursorError);
+        return res.status(400).json({
+          error: 'Invalid cursor format',
+          message: 'Cursor must be a valid base64 encoded JSON string',
+        });
+      }
+    }
+
+    // For hot and rising modes, only show recent posts
+    if (sort === 'hot') {
+      whereClause.createdAt = {
+        gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
+      };
+    } else if (sort === 'rising') {
+      whereClause.createdAt = {
+        gte: new Date(Date.now() - 12 * 60 * 60 * 1000), // Last 12 hours
+      };
+    }
+
+    logger.info('Final where clause:', JSON.stringify(whereClause, null, 2));
+
+    // Get posts with reactions and replies
+    const posts = await prisma.post.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            id: true,
+            handle: true,
+            bio: true,
+            trustScore: true,
+            verifiedFlags: true,
+          },
+        },
+        symbols: {
+          include: {
+            symbol: true,
+          },
+        },
+        reactions: {
+          select: {
+            type: true,
+            userId: true,
+          },
+        },
+        _count: {
+          select: {
+            reactions: true,
+            replies: true,
+          },
+        },
+      },
+      take: limit + 1,
+    });
+
+    logger.info('Found posts:', posts.length);
+
+    // Calculate scores and sort
+    const scoredPosts = posts
+      .map((post: any) => {
+        const reactionCounts = post.reactions.reduce(
+          (acc: Record<string, number>, reaction: { type: string }) => {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+            return acc;
+          },
+          { LIKE: 0, BOOST: 0, BOOKMARK: 0 }
+        );
+
+        const likes = reactionCounts.LIKE || 0;
+        const boosts = reactionCounts.BOOST || 0;
+        const bookmarks = reactionCounts.BOOKMARK || 0;
+        const replies = post._count.replies || 0;
+
+        // Calculate engagement score
+        const engagementScore =
+          likes * 1.0 + boosts * 3.0 + bookmarks * 2.0 + replies * 1.5;
+
+        // Apply time decay
+        const hoursOld =
+          (Date.now() - new Date(post.createdAt).getTime()) / (1000 * 60 * 60);
+        const timeDecayFactor = sort === 'hot' ? 24 : sort === 'rising' ? 6 : 1;
+        const timeDecay = Math.exp(-hoursOld / timeDecayFactor);
+
+        const score = engagementScore * timeDecay;
+
+        // Calculate reaction counts for response
+        const reactionCountsForResponse = post.reactions.reduce(
+          (acc: Record<string, number>, reaction: { type: string }) => {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+            return acc;
+          },
+          {} as Record<string, number>
+        );
+
+        // Check if current user has reacted
+        const userReactions = req.user
+          ? post.reactions
+              .filter(
+                (r: { userId: number; type: string }) =>
+                  r.userId === req.user!.id
+              )
+              .map((r: { type: string }) => r.type)
+          : [];
+
+        return {
+          ...post,
+          author: post.user,
+          media: post.media ? JSON.parse(post.media as string) : null,
+          reactionCounts: reactionCountsForResponse,
+          userReactions,
+          reactions: undefined,
+          score,
+          engagementScore,
+        };
+      })
+      .filter((post: any) => {
+        // For rising posts, only show posts with some engagement
+        if (sort === 'rising') {
+          return post.engagementScore > 0;
+        }
+        return true;
+      })
+      .sort((a: any, b: any) => {
+        // Sort by score, then by creation time
+        if (sort === 'recent') {
+          return (
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+        }
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+        return (
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        );
+      })
+      .slice(0, limit + 1);
+
+    const hasNextPage = scoredPosts.length > limit;
+    const resultPosts = hasNextPage ? scoredPosts.slice(0, -1) : scoredPosts;
+
+    logger.info('Result posts count:', resultPosts.length);
+
+    const nextCursor =
+      hasNextPage && resultPosts.length > 0
+        ? Buffer.from(
+            JSON.stringify({
+              id: resultPosts[resultPosts.length - 1]!.id,
+              createdAt: resultPosts[resultPosts.length - 1]!.createdAt,
+            })
+          ).toString('base64')
+        : null;
+
+    const response = {
+      success: true,
+      data: {
+        posts: resultPosts,
+        nextCursor,
+        hasNextPage,
+      },
+    };
+
+    logger.info('Sending response with posts count:', resultPosts.length);
+    return res.json(response);
+  } catch (error) {
+    logger.error('Error fetching trending posts:', error);
+    logger.error('Error stack:', (error as Error).stack);
+
+    if (error instanceof z.ZodError) {
+      logger.error('Zod validation error details:', error.issues);
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.issues,
+        message: 'Invalid query parameters',
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to fetch trending posts',
+      details:
+        process.env['NODE_ENV'] === 'development'
+          ? (error as Error).message
+          : undefined,
     });
   }
 });

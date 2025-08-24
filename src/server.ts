@@ -18,6 +18,7 @@ import {
   generalRateLimit,
   errorHandler,
   notFoundHandler,
+  usersRouter,
 } from './api';
 
 export function createServer(): Application {
@@ -79,6 +80,7 @@ export function createServer(): Application {
   app.use('/api/moderation', moderationRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/notifications', notificationsRouter);
+  app.use('/api/users', usersRouter); // Example for user-related routes
 
   app.get('/api/hello', (_req: Request, res: Response) => {
     res.status(200).json({

@@ -155,8 +155,8 @@ router.get(
 
     const hasMore = posts.length > limit;
     const items = hasMore ? posts.slice(0, -1) : posts;
-    const nextCursor = hasMore ? items[items.length - 1].id.toString() : null;
-
+    const lastItem = items.at(-1);
+    const nextCursor = hasMore && lastItem ? lastItem.id.toString() : null;
     const currentUserId = req.user?.id;
 
     // Transform posts with reaction counts
@@ -286,6 +286,122 @@ router.post(
       },
       isFollowing: action === 'followed',
     });
+  })
+);
+
+/**
+ * PATCH /users/me
+ * Update current user's profile
+ */
+router.patch(
+  '/me',
+  authenticateToken,
+  asyncHandler(async (req, res) => {
+    const updateProfileSchema = z.object({
+      bio: z.string().nullable().optional(),
+    });
+
+    const data = updateProfileSchema.parse(req.body);
+    const currentUserId = req.user!.id;
+
+    // Build update object dynamically to avoid passing `undefined` which can conflict with Prisma's strict types
+    const updateData: any = {};
+    if (Object.prototype.hasOwnProperty.call(req.body, 'bio')) {
+      updateData.bio = data.bio;
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: currentUserId },
+      data: updateData,
+      include: {
+        _count: { select: { posts: true, followers: true, following: true } },
+      },
+    });
+
+    return res.json({
+      user: {
+        id: updatedUser.id,
+        handle: updatedUser.handle,
+        bio: updatedUser.bio,
+        trustScore: updatedUser.trustScore,
+        joinedAt: updatedUser.createdAt,
+        stats: {
+          posts: (updatedUser as any)._count.posts,
+          followers: (updatedUser as any)._count.followers,
+          following: (updatedUser as any)._count.following,
+        },
+      },
+    });
+  })
+);
+
+/**
+ * GET /users/:handle/followers
+ * List followers of a user
+ */
+router.get(
+  '/:handle/followers',
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const { handle } = getUserSchema.parse(req.params);
+
+    const targetUser = await prisma.user.findUnique({
+      where: { handle },
+      select: { id: true },
+    });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const followers = await prisma.follow.findMany({
+      where: { followeeId: targetUser.id },
+      include: {
+        follower: { select: { id: true, handle: true, createdAt: true } },
+      },
+      take: 100,
+    });
+
+    const users = (followers as any).map((f: any) => ({
+      id: f.follower.id,
+      handle: f.follower.handle,
+    }));
+
+    return res.json({ users });
+  })
+);
+
+/**
+ * GET /users/:handle/following
+ * List users that a user is following
+ */
+router.get(
+  '/:handle/following',
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const { handle } = getUserSchema.parse(req.params);
+
+    const targetUser = await prisma.user.findUnique({
+      where: { handle },
+      select: { id: true },
+    });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const following = await prisma.follow.findMany({
+      where: { followerId: targetUser.id },
+      include: {
+        followee: { select: { id: true, handle: true, createdAt: true } },
+      },
+      take: 100,
+    });
+
+    const users = (following as any).map((f: any) => ({
+      id: f.followee.id,
+      handle: f.followee.handle,
+    }));
+
+    return res.json({ users });
   })
 );
 

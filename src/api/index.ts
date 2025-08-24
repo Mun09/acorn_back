@@ -14,6 +14,7 @@ export { default as socialRouter } from './social/router';
 export { default as moderationRouter } from './moderation/router';
 export { default as searchRouter } from './search/router';
 export { default as notificationsRouter } from './notifications/router';
+export { default as usersRouter } from './users/router'; // Example for user-related routes
 
 // Middleware exports
 export { generalRateLimit } from './middleware/rateLimit';

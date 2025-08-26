@@ -8,8 +8,7 @@ import { asyncHandler } from '../middleware/error';
 import { signupRequestSchema, loginRequestSchema } from '../validators';
 import { logger } from '../../lib/logger';
 
-const router = Router();
-
+const router: Router = Router();
 // Apply strict rate limiting to signup/login routes only
 // Other routes will have their own rate limiting applied individually
 
@@ -210,6 +209,7 @@ router.post(
  */
 router.post(
   '/logout',
+  authenticateToken,
   highFrequencyRateLimit, // More lenient for logout
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const { refreshToken } = req.body;
@@ -234,8 +234,9 @@ router.post(
  */
 router.post(
   '/logout-all',
-  authRateLimit, // Stricter rate limiting for security-sensitive operation
   authenticateToken,
+
+  authRateLimit, // Stricter rate limiting for security-sensitive operation
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     try {
       const user = req.user;
@@ -267,8 +268,9 @@ router.post(
  */
 router.get(
   '/me',
-  highFrequencyRateLimit, // More lenient rate limiting for user info
   authenticateToken,
+
+  highFrequencyRateLimit, // More lenient rate limiting for user info
   async (req: Request, res: Response): Promise<void> => {
     try {
       // User is attached to request by authenticateToken middleware

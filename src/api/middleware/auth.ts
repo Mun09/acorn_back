@@ -115,6 +115,7 @@ export const optionalAuth = async (
       const user = await prisma.user.findUnique({
         where: { id: decoded.userId },
       });
+      console.log('Optional auth user:', user);
 
       if (user) {
         req.user = user;

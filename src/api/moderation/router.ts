@@ -9,7 +9,8 @@ import { authenticateToken } from '../middleware/auth';
 import { requireAdmin } from '../middleware/admin';
 import { prisma } from '../../lib/prisma';
 
-const router = Router();
+const router: Router = Router();
+router.use(authenticateToken);
 
 // Validation schemas
 const createReportSchema = z.object({
@@ -62,7 +63,6 @@ function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
  */
 router.post(
   '/reports',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { postId, reason, details } = validateData(
       createReportSchema,
@@ -115,7 +115,6 @@ router.post(
  */
 router.post(
   '/posts/:id/hide',
-  authenticateToken,
   requireAdmin,
   asyncHandler(async (req, res) => {
     const { id } = validateData(hidePostParamsSchema, req.params);
@@ -158,7 +157,6 @@ router.post(
  */
 router.get(
   '/reports',
-  authenticateToken,
   requireAdmin,
   asyncHandler(async (req, res) => {
     const { cursor, limit, status, reason } = validateData(

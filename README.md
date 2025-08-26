@@ -1,4 +1,4 @@
-# Acorn - Node.js TypeScript Backend
+# Acorn Backend
 
 A modern Node.js backend project built with TypeScript, featuring a clean architecture and developer-friendly setup.
 
@@ -18,7 +18,7 @@ A modern Node.js backend project built with TypeScript, featuring a clean archit
 ## 📁 Project Structure
 
 ```
-acorn/
+acorn_back/
 ├── src/
 │   ├── api/          # API routes and server logic
 │   ├── config/       # Configuration files (env validation)
@@ -87,7 +87,7 @@ pnpm dev
 
 3. The server will be running at `http://localhost:3001`
 
-## � Docker Development
+## 🐳 Docker Development
 
 ### Quick Start with Docker
 
@@ -138,7 +138,7 @@ docker-compose up --build
 docker-compose exec api pnpm prisma:migrate
 ```
 
-## �🗄️ Database Setup
+## 🗄️ Database Setup
 
 This project uses Prisma as the database toolkit. To set up your database:
 

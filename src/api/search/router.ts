@@ -6,10 +6,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { optionalAuth } from '../middleware/auth';
+import { authenticateToken } from '../middleware/auth';
 import { prisma } from '../../lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // Validation schemas
 const searchQuerySchema = z.object({
@@ -49,13 +49,14 @@ function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
   return result.data;
 }
 
+router.use(authenticateToken);
+
 /**
  * GET /search
  * Universal search endpoint with type filtering
  */
 router.get(
   '/',
-  optionalAuth,
   asyncHandler(async (req, res) => {
     const { q, type, limit, cursor } = validateData(
       searchQuerySchema,

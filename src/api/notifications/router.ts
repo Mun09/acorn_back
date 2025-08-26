@@ -31,11 +31,13 @@ const markAsReadSchema = z.object({
   notificationIds: z.array(z.string()).optional(),
 });
 
+router.use(authenticateToken);
+
 /**
  * GET /api/notifications
  * Get paginated notifications for the authenticated user
  */
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const query = notificationQuerySchema.parse(req.query);
     const { page, limit, type, unread } = query;
@@ -82,7 +84,7 @@ router.get('/', authenticateToken, async (req, res) => {
  * GET /api/notifications/unread-count
  * Get unread notifications count for the authenticated user
  */
-router.get('/unread-count', authenticateToken, async (req, res) => {
+router.get('/unread-count', async (req, res) => {
   try {
     const count = await prisma.notification.count({
       where: {
@@ -102,7 +104,7 @@ router.get('/unread-count', authenticateToken, async (req, res) => {
  * PATCH /api/notifications/mark-read
  * Mark notifications as read
  */
-router.patch('/mark-read', authenticateToken, async (req, res) => {
+router.patch('/mark-read', async (req, res) => {
   try {
     const { notificationIds } = markAsReadSchema.parse(req.body);
 
@@ -131,7 +133,7 @@ router.patch('/mark-read', authenticateToken, async (req, res) => {
  * PATCH /api/notifications/:id/mark-read
  * Mark a specific notification as read
  */
-router.patch('/:id/mark-read', authenticateToken, async (req, res) => {
+router.patch('/:id/mark-read', async (req, res) => {
   try {
     const idParam = req.params['id'];
     if (!idParam) {

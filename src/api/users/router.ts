@@ -5,11 +5,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { authenticateToken, optionalAuth } from '../middleware/auth';
+import { authenticateToken } from '../middleware/auth';
 import { readOnlyRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // Validation schemas
 const getUserSchema = z.object({
@@ -23,7 +23,7 @@ const getUserSchema = z.object({
 router.get(
   '/:handle',
   readOnlyRateLimit, // Lenient rate limiting for read-only operations
-  optionalAuth,
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
     const currentUserId = req.user?.id;
@@ -57,6 +57,8 @@ router.get(
 
     // Check if current user follows this user
     let isFollowing = false;
+    console.log('currentUserId:', currentUserId);
+    console.log('user.id:', user.id);
     if (currentUserId && currentUserId !== user.id) {
       const follow = await prisma.follow.findUnique({
         where: {
@@ -67,7 +69,10 @@ router.get(
         },
       });
       isFollowing = !!follow;
+      console.log('isFollowing:', isFollowing);
     }
+
+    console.log('user:', user);
 
     return res.json({
       user: {
@@ -93,7 +98,7 @@ router.get(
  */
 router.get(
   '/:handle/posts',
-  optionalAuth,
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
     const limit = Math.min(parseInt(req.query['limit'] as string) || 20, 50);
@@ -341,7 +346,7 @@ router.patch(
  */
 router.get(
   '/:handle/followers',
-  optionalAuth,
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
 
@@ -376,7 +381,7 @@ router.get(
  */
 router.get(
   '/:handle/following',
-  optionalAuth,
+  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
 

@@ -9,7 +9,7 @@ import { authenticateToken } from '../middleware/auth';
 import { extractMentionsFromText, getUniqueHandles } from '../../lib/mentions';
 import { prisma } from '../../lib/prisma';
 
-const router = Router();
+const router: Router = Router();
 
 // Validation schemas
 const followParamsSchema = z.object({

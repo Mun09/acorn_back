@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
-import { authenticateToken, optionalAuth } from '../middleware/auth';
+import { authenticateToken } from '../middleware/auth';
 import {
   postRateLimit,
   readOnlyRateLimit,
@@ -14,7 +14,7 @@ import {
   createReactionNotification,
 } from '../social/router';
 
-const router = Router();
+const router: Router = Router();
 
 // Post creation schema
 const createPostSchema = z.object({
@@ -49,11 +49,13 @@ const trendingQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(50).default(20),
 });
 
+router.use(authenticateToken);
+
 /**
  * POST /posts
  * Create a new post with symbol parsing
  */
-router.post('/', postRateLimit, authenticateToken, async (req, res) => {
+router.post('/', postRateLimit, async (req, res) => {
   try {
     const { text, media, replyTo } = createPostSchema.parse(req.body);
     const userId = req.user!.id;
@@ -143,321 +145,311 @@ router.post('/', postRateLimit, authenticateToken, async (req, res) => {
  * GET /posts/bookmarks
  * Get user's bookmarked posts
  */
-router.get(
-  '/bookmarks',
-  readOnlyRateLimit,
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const userId = req.user!.id;
+router.get('/bookmarks', readOnlyRateLimit, async (req, res) => {
+  try {
+    const userId = req.user!.id;
 
-      // Query 파라미터 검증
-      const querySchema = z.object({
-        cursor: z.string().optional(),
-        limit: z.coerce.number().min(1).max(50).default(20),
-      });
+    // Query 파라미터 검증
+    const querySchema = z.object({
+      cursor: z.string().optional(),
+      limit: z.coerce.number().min(1).max(50).default(20),
+    });
 
-      const { cursor, limit } = querySchema.parse(req.query);
+    const { cursor, limit } = querySchema.parse(req.query);
 
-      let whereClause: any = {
-        isHidden: false,
-        reactions: {
-          some: {
-            userId: userId,
-            type: 'BOOKMARK',
-          },
+    let whereClause: any = {
+      isHidden: false,
+      reactions: {
+        some: {
+          userId: userId,
+          type: 'BOOKMARK',
         },
-      };
+      },
+    };
 
-      // Add cursor filtering if provided
-      if (cursor) {
-        try {
-          const cursorData = JSON.parse(
-            Buffer.from(cursor as string, 'base64').toString()
-          );
-          whereClause.id = {
-            lt: cursorData.id,
-          };
-        } catch (cursorError) {
-          return res.status(400).json({
-            error: 'Invalid cursor format',
-            message: 'Cursor must be a valid base64 encoded JSON string',
-          });
-        }
-      }
-
-      console.log('Bookmark whereClause:', whereClause);
-
-      // Get bookmarked posts
-      const posts = await prisma.post.findMany({
-        where: whereClause,
-        include: {
-          user: {
-            select: {
-              id: true,
-              handle: true,
-              bio: true,
-              trustScore: true,
-              verifiedFlags: true,
-            },
-          },
-          symbols: {
-            include: {
-              symbol: true,
-            },
-          },
-          reactions: {
-            select: {
-              type: true,
-              userId: true,
-            },
-          },
-          _count: {
-            select: {
-              reactions: true,
-              replies: true,
-            },
-          },
-        },
-        orderBy: [
-          {
-            reactions: {
-              _count: 'desc',
-            },
-          },
-          {
-            createdAt: 'desc',
-          },
-        ],
-        take: Number(limit) + 1,
-      });
-
-      const hasNextPage = posts.length > Number(limit);
-      const resultPosts = hasNextPage ? posts.slice(0, -1) : posts;
-
-      // Format posts
-      const formattedPosts = resultPosts.map((post: any) => {
-        // Calculate reaction counts
-        const reactionCounts = post.reactions.reduce(
-          (acc: Record<string, number>, reaction: { type: string }) => {
-            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
-            return acc;
-          },
-          {} as Record<string, number>
+    // Add cursor filtering if provided
+    if (cursor) {
+      try {
+        const cursorData = JSON.parse(
+          Buffer.from(cursor as string, 'base64').toString()
         );
-
-        // Get user's reactions
-        const userReactions = post.reactions
-          .filter((r: { userId: number }) => r.userId === userId)
-          .map((r: { type: string }) => r.type);
-
-        return {
-          ...post,
-          author: post.user,
-          media: post.media ? JSON.parse(post.media as string) : null,
-          reactionCounts,
-          userReactions,
-          reactions: undefined,
+        whereClause.id = {
+          lt: cursorData.id,
         };
-      });
-
-      const nextCursor =
-        hasNextPage && formattedPosts.length > 0
-          ? Buffer.from(
-              JSON.stringify({
-                id: formattedPosts[formattedPosts.length - 1]!.id,
-                createdAt: formattedPosts[formattedPosts.length - 1]!.createdAt,
-              })
-            ).toString('base64')
-          : null;
-
-      return res.json({
-        success: true,
-        data: {
-          posts: formattedPosts,
-          nextCursor,
-          hasNextPage,
-        },
-      });
-    } catch (error) {
-      logger.error('Error fetching bookmarked posts:', error);
-
-      if (error instanceof z.ZodError) {
+      } catch (cursorError) {
         return res.status(400).json({
-          error: 'Validation error',
-          details: error.issues,
-          message: 'Invalid query parameters',
+          error: 'Invalid cursor format',
+          message: 'Cursor must be a valid base64 encoded JSON string',
         });
       }
+    }
 
-      return res.status(500).json({
-        error: 'Internal server error',
-        message: 'Failed to fetch bookmarked posts',
+    console.log('Bookmark whereClause:', whereClause);
+
+    // Get bookmarked posts
+    const posts = await prisma.post.findMany({
+      where: whereClause,
+      include: {
+        user: {
+          select: {
+            id: true,
+            handle: true,
+            bio: true,
+            trustScore: true,
+            verifiedFlags: true,
+          },
+        },
+        symbols: {
+          include: {
+            symbol: true,
+          },
+        },
+        reactions: {
+          select: {
+            type: true,
+            userId: true,
+          },
+        },
+        _count: {
+          select: {
+            reactions: true,
+            replies: true,
+          },
+        },
+      },
+      orderBy: [
+        {
+          reactions: {
+            _count: 'desc',
+          },
+        },
+        {
+          createdAt: 'desc',
+        },
+      ],
+      take: Number(limit) + 1,
+    });
+
+    const hasNextPage = posts.length > Number(limit);
+    const resultPosts = hasNextPage ? posts.slice(0, -1) : posts;
+
+    // Format posts
+    const formattedPosts = resultPosts.map((post: any) => {
+      // Calculate reaction counts
+      const reactionCounts = post.reactions.reduce(
+        (acc: Record<string, number>, reaction: { type: string }) => {
+          acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>
+      );
+
+      // Get user's reactions
+      const userReactions = post.reactions
+        .filter((r: { userId: number }) => r.userId === userId)
+        .map((r: { type: string }) => r.type);
+
+      return {
+        ...post,
+        author: post.user,
+        media: post.media ? JSON.parse(post.media as string) : null,
+        reactionCounts,
+        userReactions,
+        reactions: undefined,
+      };
+    });
+
+    const nextCursor =
+      hasNextPage && formattedPosts.length > 0
+        ? Buffer.from(
+            JSON.stringify({
+              id: formattedPosts[formattedPosts.length - 1]!.id,
+              createdAt: formattedPosts[formattedPosts.length - 1]!.createdAt,
+            })
+          ).toString('base64')
+        : null;
+
+    return res.json({
+      success: true,
+      data: {
+        posts: formattedPosts,
+        nextCursor,
+        hasNextPage,
+      },
+    });
+  } catch (error) {
+    logger.error('Error fetching bookmarked posts:', error);
+
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.issues,
+        message: 'Invalid query parameters',
       });
     }
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to fetch bookmarked posts',
+    });
   }
-);
+});
 
 /**
  * GET /posts/my-reactions
  * Get posts that the current user has reacted to
  */
-router.get(
-  '/my-reactions',
-  readOnlyRateLimit,
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const userId = req.user?.id;
-      if (!userId) {
-        return res.status(401).json({
-          error: 'Unauthorized',
-          message: 'User authentication required',
-        });
-      }
+router.get('/my-reactions', readOnlyRateLimit, async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        error: 'Unauthorized',
+        message: 'User authentication required',
+      });
+    }
 
-      const { cursor, limit = '20', type } = req.query;
+    const { cursor, limit = '20', type } = req.query;
 
-      // Validate type parameter if provided
-      const validTypes = ['LIKE', 'BOOKMARK', 'BOOST'];
-      if (type && !validTypes.includes(type as string)) {
+    // Validate type parameter if provided
+    const validTypes = ['LIKE', 'BOOKMARK', 'BOOST'];
+    if (type && !validTypes.includes(type as string)) {
+      return res.status(400).json({
+        error: 'Invalid type parameter',
+        message: 'Type must be one of: LIKE, BOOKMARK, BOOST',
+      });
+    }
+
+    let whereClause: any = {
+      userId: userId,
+      post: {
+        isHidden: false,
+      },
+    };
+
+    // Filter by reaction type if specified
+    if (type) {
+      whereClause.type = type;
+    }
+
+    // Add cursor filtering if provided
+    if (cursor) {
+      try {
+        const cursorData = JSON.parse(
+          Buffer.from(cursor as string, 'base64').toString()
+        );
+        whereClause.id = {
+          lt: cursorData.id,
+        };
+      } catch (cursorError) {
         return res.status(400).json({
-          error: 'Invalid type parameter',
-          message: 'Type must be one of: LIKE, BOOKMARK, BOOST',
+          error: 'Invalid cursor format',
+          message: 'Cursor must be a valid base64 encoded JSON string',
         });
       }
+    }
 
-      let whereClause: any = {
-        userId: userId,
+    // Get user's reactions with posts
+    const reactions = await prisma.reaction.findMany({
+      where: whereClause,
+      include: {
         post: {
-          isHidden: false,
-        },
-      };
-
-      // Filter by reaction type if specified
-      if (type) {
-        whereClause.type = type;
-      }
-
-      // Add cursor filtering if provided
-      if (cursor) {
-        try {
-          const cursorData = JSON.parse(
-            Buffer.from(cursor as string, 'base64').toString()
-          );
-          whereClause.id = {
-            lt: cursorData.id,
-          };
-        } catch (cursorError) {
-          return res.status(400).json({
-            error: 'Invalid cursor format',
-            message: 'Cursor must be a valid base64 encoded JSON string',
-          });
-        }
-      }
-
-      // Get user's reactions with posts
-      const reactions = await prisma.reaction.findMany({
-        where: whereClause,
-        include: {
-          post: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  handle: true,
-                  email: true,
-                  bio: true,
-                  createdAt: true,
-                  trustScore: true,
-                  verifiedFlags: true,
-                },
+          include: {
+            user: {
+              select: {
+                id: true,
+                handle: true,
+                email: true,
+                bio: true,
+                createdAt: true,
+                trustScore: true,
+                verifiedFlags: true,
               },
-              symbols: {
-                include: {
-                  symbol: true,
-                },
+            },
+            symbols: {
+              include: {
+                symbol: true,
               },
-              reactions: {
-                select: {
-                  type: true,
-                  userId: true,
-                },
+            },
+            reactions: {
+              select: {
+                type: true,
+                userId: true,
               },
-              _count: {
-                select: {
-                  reactions: true,
-                  replies: true,
-                },
+            },
+            _count: {
+              select: {
+                reactions: true,
+                replies: true,
               },
             },
           },
         },
-        orderBy: {
-          id: 'desc',
+      },
+      orderBy: {
+        id: 'desc',
+      },
+      take: Number(limit) + 1,
+    });
+
+    const hasNextPage = reactions.length > Number(limit);
+    const resultReactions = hasNextPage ? reactions.slice(0, -1) : reactions;
+
+    // Format posts
+    const formattedPosts = resultReactions.map((reaction: any) => {
+      const post = reaction.post;
+
+      // Calculate reaction counts
+      const reactionCounts = post.reactions.reduce(
+        (acc: Record<string, number>, r: { type: string }) => {
+          acc[r.type] = (acc[r.type] || 0) + 1;
+          return acc;
         },
-        take: Number(limit) + 1,
-      });
+        {} as Record<string, number>
+      );
 
-      const hasNextPage = reactions.length > Number(limit);
-      const resultReactions = hasNextPage ? reactions.slice(0, -1) : reactions;
+      // Get user's reactions
+      const userReactions = post.reactions
+        .filter((r: { userId: number }) => r.userId === userId)
+        .map((r: { type: string }) => r.type);
 
-      // Format posts
-      const formattedPosts = resultReactions.map((reaction: any) => {
-        const post = reaction.post;
+      return {
+        ...post,
+        author: post.user,
+        media: post.media ? JSON.parse(post.media as string) : null,
+        reactionCounts,
+        userReactions,
+        reactions: undefined,
+        userReactionType: reaction.type, // Include the reaction type that caused this post to be in the list
+      };
+    });
 
-        // Calculate reaction counts
-        const reactionCounts = post.reactions.reduce(
-          (acc: Record<string, number>, r: { type: string }) => {
-            acc[r.type] = (acc[r.type] || 0) + 1;
-            return acc;
-          },
-          {} as Record<string, number>
-        );
+    const nextCursor =
+      hasNextPage && resultReactions.length > 0
+        ? Buffer.from(
+            JSON.stringify({
+              id: resultReactions[resultReactions.length - 1]!.id,
+            })
+          ).toString('base64')
+        : null;
 
-        // Get user's reactions
-        const userReactions = post.reactions
-          .filter((r: { userId: number }) => r.userId === userId)
-          .map((r: { type: string }) => r.type);
+    return res.json({
+      success: true,
+      data: {
+        posts: formattedPosts,
+        nextCursor,
+        hasNextPage,
+      },
+    });
+  } catch (error) {
+    logger.error('Error fetching user reactions:', error);
 
-        return {
-          ...post,
-          author: post.user,
-          media: post.media ? JSON.parse(post.media as string) : null,
-          reactionCounts,
-          userReactions,
-          reactions: undefined,
-          userReactionType: reaction.type, // Include the reaction type that caused this post to be in the list
-        };
-      });
-
-      const nextCursor =
-        hasNextPage && resultReactions.length > 0
-          ? Buffer.from(
-              JSON.stringify({
-                id: resultReactions[resultReactions.length - 1]!.id,
-              })
-            ).toString('base64')
-          : null;
-
-      return res.json({
-        success: true,
-        data: {
-          posts: formattedPosts,
-          nextCursor,
-          hasNextPage,
-        },
-      });
-    } catch (error) {
-      logger.error('Error fetching user reactions:', error);
-
-      return res.status(500).json({
-        error: 'Internal server error',
-        message: 'Failed to fetch user reactions',
-      });
-    }
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to fetch user reactions',
+    });
   }
-);
+});
 
 /**
  * GET /posts/trending
@@ -466,7 +458,7 @@ router.get(
  * sort=rising: Fast-growing posts in last 6h
  * sort=recent: Recent posts with symbols only
  */
-router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
+router.get('/trending', readOnlyRateLimit, async (req, res) => {
   try {
     logger.info('Trending API called with query:', req.query);
 
@@ -683,7 +675,7 @@ router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
  * GET /posts/:id
  * Get post details with author and reaction counts
  */
-router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
+router.get('/:id', readOnlyRateLimit, async (req, res) => {
   try {
     const postId = parseInt(req.params['id']!);
 
@@ -834,7 +826,7 @@ router.get('/:id', readOnlyRateLimit, optionalAuth, async (req, res) => {
  * mode=new: Order by creation time
  * mode=hot: Order by reaction score with time decay (last 24h)
  */
-router.get('/', readOnlyRateLimit, optionalAuth, async (req, res) => {
+router.get('/', readOnlyRateLimit, async (req, res) => {
   try {
     const { mode, cursor, limit } = feedQuerySchema.parse(req.query);
 
@@ -1101,7 +1093,7 @@ router.get('/', readOnlyRateLimit, optionalAuth, async (req, res) => {
  * sort=rising: Fast-growing posts in last 6h
  * sort=recent: Recent posts with symbols only
  */
-router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
+router.get('/trending', readOnlyRateLimit, async (req, res) => {
   try {
     logger.info('Trending API called with query:', req.query);
 
@@ -1308,125 +1300,120 @@ router.get('/trending', readOnlyRateLimit, optionalAuth, async (req, res) => {
  * POST /posts/:id/react
  * Toggle reaction on a post (LIKE, BOOKMARK, BOOST)
  */
-router.post(
-  '/:id/react',
-  generalRateLimit,
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const postId = parseInt(req.params['id']!);
-      const { type } = reactToPostSchema.parse(req.body);
-      const userId = req.user!.id;
+router.post('/:id/react', generalRateLimit, async (req, res) => {
+  try {
+    const postId = parseInt(req.params['id']!);
+    const { type } = reactToPostSchema.parse(req.body);
+    const userId = req.user!.id;
 
-      if (isNaN(postId)) {
-        return res.status(400).json({
-          error: 'Invalid post ID',
-        });
-      }
-
-      // Check if post exists
-      const post = await prisma.post.findUnique({
-        where: { id: postId },
-        select: { id: true },
-      });
-
-      if (!post) {
-        return res.status(404).json({
-          error: 'Post not found',
-        });
-      }
-
-      // Check if reaction already exists
-      const existingReaction = await prisma.reaction.findUnique({
-        where: {
-          postId_userId_type: {
-            postId,
-            userId,
-            type,
-          },
-        },
-      });
-
-      let action: 'added' | 'removed';
-
-      if (existingReaction) {
-        // Remove existing reaction (toggle off)
-        await prisma.reaction.delete({
-          where: {
-            id: existingReaction.id,
-          },
-        });
-        action = 'removed';
-      } else {
-        // Add new reaction (toggle on)
-        await prisma.reaction.create({
-          data: {
-            postId,
-            userId,
-            type,
-          },
-        });
-        action = 'added';
-
-        // Create reaction notification
-        const postOwner = await prisma.post.findUnique({
-          where: { id: postId },
-          select: { userId: true },
-        });
-
-        if (postOwner) {
-          await createReactionNotification(
-            postOwner.userId,
-            userId,
-            req.user!.handle,
-            postId,
-            type
-          );
-        }
-      }
-
-      // Get updated reaction counts
-      const reactionCounts = await prisma.reaction.groupBy({
-        by: ['type'],
-        where: { postId },
-        _count: { type: true },
-      });
-
-      const counts = reactionCounts.reduce(
-        (
-          acc: Record<string, number>,
-          group: { type: string; _count: { type: number } }
-        ) => {
-          acc[group.type] = group._count.type;
-          return acc;
-        },
-        {} as Record<string, number>
-      );
-
-      return res.json({
-        success: true,
-        data: {
-          action,
-          type,
-          reactionCounts: counts,
-        },
-      });
-    } catch (error) {
-      logger.error('Error toggling reaction:', error);
-
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({
-          error: 'Validation error',
-          details: error.issues,
-        });
-      }
-
-      return res.status(500).json({
-        error: 'Internal server error',
-        message: 'Failed to toggle reaction',
+    if (isNaN(postId)) {
+      return res.status(400).json({
+        error: 'Invalid post ID',
       });
     }
+
+    // Check if post exists
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+      select: { id: true },
+    });
+
+    if (!post) {
+      return res.status(404).json({
+        error: 'Post not found',
+      });
+    }
+
+    // Check if reaction already exists
+    const existingReaction = await prisma.reaction.findUnique({
+      where: {
+        postId_userId_type: {
+          postId,
+          userId,
+          type,
+        },
+      },
+    });
+
+    let action: 'added' | 'removed';
+
+    if (existingReaction) {
+      // Remove existing reaction (toggle off)
+      await prisma.reaction.delete({
+        where: {
+          id: existingReaction.id,
+        },
+      });
+      action = 'removed';
+    } else {
+      // Add new reaction (toggle on)
+      await prisma.reaction.create({
+        data: {
+          postId,
+          userId,
+          type,
+        },
+      });
+      action = 'added';
+
+      // Create reaction notification
+      const postOwner = await prisma.post.findUnique({
+        where: { id: postId },
+        select: { userId: true },
+      });
+
+      if (postOwner) {
+        await createReactionNotification(
+          postOwner.userId,
+          userId,
+          req.user!.handle,
+          postId,
+          type
+        );
+      }
+    }
+
+    // Get updated reaction counts
+    const reactionCounts = await prisma.reaction.groupBy({
+      by: ['type'],
+      where: { postId },
+      _count: { type: true },
+    });
+
+    const counts = reactionCounts.reduce(
+      (
+        acc: Record<string, number>,
+        group: { type: string; _count: { type: number } }
+      ) => {
+        acc[group.type] = group._count.type;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+
+    return res.json({
+      success: true,
+      data: {
+        action,
+        type,
+        reactionCounts: counts,
+      },
+    });
+  } catch (error) {
+    logger.error('Error toggling reaction:', error);
+
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.issues,
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Internal server error',
+      message: 'Failed to toggle reaction',
+    });
   }
-);
+});
 
 export default router;

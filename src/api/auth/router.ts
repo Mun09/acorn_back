@@ -4,10 +4,27 @@ import { asyncHandler } from '../middleware/error';
 import { authRateLimit, highFrequencyRateLimit } from '../middleware/rateLimit';
 import { authenticateSession } from '../middleware/firebaseSession';
 import prisma from '../../lib/prisma';
+import { getUserSchema } from '../../types/schema';
 
 const router: Router = Router();
 const COOKIE_NAME = process.env['SESSION_COOKIE_NAME'] ?? 'acorn_session';
 const IS_PROD = process.env['NODE_ENV'] === 'production';
+
+router.get(
+  '/:handle/test',
+  highFrequencyRateLimit, // Lenient rate limiting for read-only operations
+  asyncHandler(async (req, res) => {
+    const { handle } = getUserSchema.parse(req.params);
+    const user = await prisma.user.findUnique({
+      where: { handle },
+    });
+
+    if (!user) {
+      return res.json({ user: null });
+    }
+    return res.json({ user });
+  })
+);
 
 /**
  * POST /auth/session-cookie
@@ -49,7 +66,7 @@ router.get(
   authenticateSession,
   asyncHandler(async (req: Request, res: Response) => {
     const user = req.user!;
-    res.json({
+    return res.json({
       message: 'User information retrieved successfully',
       data: {
         user: {

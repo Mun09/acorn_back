@@ -1,9 +1,11 @@
 import admin from 'firebase-admin';
 
 if (!admin.apps.length) {
-  // 권장: GOOGLE_APPLICATION_CREDENTIALS 또는 서비스 계정 JSON을 환경변수로
+  const serviceAccount = require('../../serviceAccountKey.json');
+
   admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
+    credential: admin.credential.cert(serviceAccount),
+    projectId: serviceAccount.project_id, // 명시하면 더 안전
   });
 }
 

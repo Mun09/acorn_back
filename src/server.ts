@@ -20,6 +20,7 @@ import {
   notFoundHandler,
   usersRouter,
 } from './api';
+import { authenticateSession } from './api/middleware/firebaseSession';
 
 export function createServer(): Application {
   const app = express();
@@ -73,14 +74,15 @@ export function createServer(): Application {
 
   // API routes
   app.use('/api/auth', authRouter);
-  app.use('/api/symbols', symbolsRouter);
-  app.use('/api/posts', postsRouter);
-  app.use('/api/feed', feedRouter);
-  app.use('/api/social', socialRouter);
-  app.use('/api/moderation', moderationRouter);
-  app.use('/api/search', searchRouter);
-  app.use('/api/notifications', notificationsRouter);
-  app.use('/api/users', usersRouter); // Example for user-related routes
+
+  app.use('/api/symbols', authenticateSession, symbolsRouter);
+  app.use('/api/posts', authenticateSession, postsRouter);
+  app.use('/api/feed', authenticateSession, feedRouter);
+  app.use('/api/social', authenticateSession, socialRouter);
+  app.use('/api/moderation', authenticateSession, moderationRouter);
+  app.use('/api/search', authenticateSession, searchRouter);
+  app.use('/api/notifications', authenticateSession, notificationsRouter);
+  app.use('/api/users', authenticateSession, usersRouter);
 
   // Root endpoint
   app.get('/', (_req: Request, res: Response) => {

@@ -7,13 +7,9 @@ import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { readOnlyRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
+import { getUserSchema } from '../../types/schema';
 
 const router: Router = Router();
-
-// Validation schemas
-const getUserSchema = z.object({
-  handle: z.string().min(1).max(30),
-});
 
 /**
  * GET /users/:handle

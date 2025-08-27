@@ -5,7 +5,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { authenticateToken } from '../middleware/auth';
 import { extractMentionsFromText, getUniqueHandles } from '../../lib/mentions';
 import { prisma } from '../../lib/prisma';
 
@@ -41,7 +40,7 @@ function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
  */
 router.post(
   '/follow/:handle',
-  authenticateToken,
+
   asyncHandler(async (req, res) => {
     const { handle } = validateData(followParamsSchema, req.params);
     const currentUserId = req.user!.id;
@@ -103,7 +102,7 @@ router.post(
  */
 router.get(
   '/notifications',
-  authenticateToken,
+
   asyncHandler(async (req, res) => {
     const { cursor, limit, type } = validateData(
       notificationQuerySchema,
@@ -132,7 +131,7 @@ router.get(
  */
 router.post(
   '/notifications/:id/read',
-  authenticateToken,
+
   asyncHandler(async (req, res) => {
     const { id } = validateData(notificationParamsSchema, req.params);
     const userId = req.user!.id;

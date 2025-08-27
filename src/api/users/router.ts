@@ -5,7 +5,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { authenticateToken } from '../middleware/auth';
 import { readOnlyRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
 
@@ -23,7 +22,6 @@ const getUserSchema = z.object({
 router.get(
   '/:handle',
   readOnlyRateLimit, // Lenient rate limiting for read-only operations
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
     const currentUserId = req.user?.id;
@@ -57,8 +55,6 @@ router.get(
 
     // Check if current user follows this user
     let isFollowing = false;
-    console.log('currentUserId:', currentUserId);
-    console.log('user.id:', user.id);
     if (currentUserId && currentUserId !== user.id) {
       const follow = await prisma.follow.findUnique({
         where: {
@@ -98,7 +94,6 @@ router.get(
  */
 router.get(
   '/:handle/posts',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
     const limit = Math.min(parseInt(req.query['limit'] as string) || 20, 50);
@@ -212,7 +207,6 @@ router.get(
  */
 router.post(
   '/:handle/follow',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
     const currentUserId = req.user!.id;
@@ -300,7 +294,6 @@ router.post(
  */
 router.patch(
   '/me',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const updateProfileSchema = z.object({
       bio: z.string().nullable().optional(),
@@ -346,7 +339,6 @@ router.patch(
  */
 router.get(
   '/:handle/followers',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
 
@@ -381,7 +373,6 @@ router.get(
  */
 router.get(
   '/:handle/following',
-  authenticateToken,
   asyncHandler(async (req, res) => {
     const { handle } = getUserSchema.parse(req.params);
 

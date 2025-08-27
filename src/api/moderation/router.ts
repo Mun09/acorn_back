@@ -5,12 +5,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { authenticateToken } from '../middleware/auth';
 import { requireAdmin } from '../middleware/admin';
 import { prisma } from '../../lib/prisma';
 
 const router: Router = Router();
-router.use(authenticateToken);
 
 // Validation schemas
 const createReportSchema = z.object({

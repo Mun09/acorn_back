@@ -5,7 +5,6 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { authenticateToken } from '../middleware/auth';
 import { prisma } from '../../lib/prisma';
 
 const router: Router = Router();
@@ -30,8 +29,6 @@ const notificationQuerySchema = z.object({
 const markAsReadSchema = z.object({
   notificationIds: z.array(z.string()).optional(),
 });
-
-router.use(authenticateToken);
 
 /**
  * GET /api/notifications

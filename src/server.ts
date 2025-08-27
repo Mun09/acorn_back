@@ -82,16 +82,6 @@ export function createServer(): Application {
   app.use('/api/notifications', notificationsRouter);
   app.use('/api/users', usersRouter); // Example for user-related routes
 
-  app.get('/api/hello', (_req: Request, res: Response) => {
-    res.status(200).json({
-      message: 'Hello, World!',
-      data: {
-        greeting: 'Welcome to Acorn API',
-        version: '1.0.0',
-      },
-    });
-  });
-
   // Root endpoint
   app.get('/', (_req: Request, res: Response) => {
     res.status(200).json({

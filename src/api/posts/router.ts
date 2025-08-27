@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
-import { authenticateToken } from '../middleware/auth';
 import {
   postRateLimit,
   readOnlyRateLimit,
@@ -48,8 +47,6 @@ const trendingQuerySchema = z.object({
   cursor: z.string().optional(),
   limit: z.coerce.number().min(1).max(50).default(20),
 });
-
-router.use(authenticateToken);
 
 /**
  * POST /posts

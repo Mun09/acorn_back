@@ -11,6 +11,7 @@ datasource db {
 model User {
   id            Int            @id @default(sequence())
   handle        String         @unique
+  displayName   String         @default("")
   email         String         @unique
   firebaseUid   String?        @unique
   bio           String?

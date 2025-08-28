@@ -72,6 +72,7 @@ router.get(
         user: {
           id: user.id,
           email: user.email,
+          displayName: user.displayName,
           handle: user.handle,
           bio: user.bio,
           trustScore: user.trustScore,
@@ -81,6 +82,50 @@ router.get(
         },
       },
     });
+  })
+);
+
+/**
+ * DELETE /auth/me
+ * 계정 및 관련 세션/쿠키 정리
+ * - 주의: Prisma 스키마에서 외래키 onDelete가 CASCADE가 아니면,
+ *   하위 레코드(게시글/팔로우/리액션 등)를 먼저 직접 삭제해줘야 합니다.
+ * - Firebase 계정도 함께 삭제합니다(권장).
+ */
+router.delete(
+  '/me',
+  authRateLimit,
+  authenticateSession,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!;
+
+    // 1) 모든 기기 세션 무효화
+    if (user.firebaseUid) {
+      await admin.auth().revokeRefreshTokens(user.firebaseUid);
+    }
+
+    // 3) 유저 삭제
+    await prisma.user.delete({ where: { id: user.id } });
+
+    // 4) Firebase 계정 삭제 (DB 삭제가 성공했을 때만 시도)
+    if (user.firebaseUid) {
+      try {
+        await admin.auth().deleteUser(user.firebaseUid);
+      } catch (e) {
+        // 이미 지워졌거나 권한 이슈 등 – 치명적이진 않으니 로깅만
+        console.error('[DELETE /auth/me] Failed to delete Firebase user:', e);
+      }
+    }
+
+    // 5) 쿠키 삭제
+    res.clearCookie(COOKIE_NAME, {
+      httpOnly: true,
+      secure: IS_PROD,
+      sameSite: 'strict',
+      path: '/',
+    });
+
+    return res.status(200).json({ message: 'Account deleted' });
   })
 );
 
@@ -117,6 +162,7 @@ router.post(
           firebaseUid,
           email,
           handle,
+          displayName: handle,
           bio: null,
           trustScore: 0,
           verifiedFlags: null as any,
@@ -152,6 +198,7 @@ router.post(
 router.post(
   '/logout',
   highFrequencyRateLimit,
+  authenticateSession,
   asyncHandler(async (_req: Request, res: Response) => {
     res.clearCookie(COOKIE_NAME, {
       httpOnly: true,

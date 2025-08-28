@@ -3,11 +3,11 @@
  * Simple example of actual database integration
  */
 import { Router } from 'express';
-import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
-import { readOnlyRateLimit } from '../middleware/rateLimit';
+import { readOnlyRateLimit, strictRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
-import { getUserSchema } from '../../types/schema';
+import { getUserSchema, UpdateUserSchema } from '../../types/schema';
+import { authenticateSession } from '../middleware/firebaseSession';
 
 const router: Router = Router();
 
@@ -61,10 +61,7 @@ router.get(
         },
       });
       isFollowing = !!follow;
-      console.log('isFollowing:', isFollowing);
     }
-
-    console.log('user:', user);
 
     return res.json({
       user: {
@@ -285,46 +282,67 @@ router.post(
 );
 
 /**
- * PATCH /users/me
- * Update current user's profile
+ * PATCH /auth/me
+ * body: { displayName?, bio?, handle? }
+ * 로그인된 본인 계정의 일부 필드만 업데이트
  */
 router.patch(
   '/me',
+  strictRateLimit,
+  authenticateSession,
   asyncHandler(async (req, res) => {
-    const updateProfileSchema = z.object({
-      bio: z.string().nullable().optional(),
-    });
+    const sessionUser = req.user!;
 
-    const data = updateProfileSchema.parse(req.body);
-    const currentUserId = req.user!.id;
+    // 1) 입력 검증
+    const parsed = UpdateUserSchema.safeParse(req.body);
 
-    // Build update object dynamically to avoid passing `undefined` which can conflict with Prisma's strict types
-    const updateData: any = {};
-    if (Object.prototype.hasOwnProperty.call(req.body, 'bio')) {
-      updateData.bio = data.bio;
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid body', details: parsed.error.flatten() });
     }
 
-    const updatedUser = await prisma.user.update({
-      where: { id: currentUserId },
-      data: updateData,
-      include: {
-        _count: { select: { posts: true, followers: true, following: true } },
+    const { displayName, bio, handle } = parsed.data;
+
+    // 2) handle 변경 시 중복 체크
+    if (typeof handle === 'string' && handle !== sessionUser.handle) {
+      const exists = await prisma.user.findUnique({ where: { handle } });
+      if (exists) {
+        return res.status(409).json({ error: 'Handle already in use' });
+      }
+    }
+
+    // 3) 업데이트할 data 구성 (undefined는 Prisma가 무시)
+    const data: any = {};
+    if (typeof displayName !== 'undefined') data.displayName = displayName;
+    if (typeof bio !== 'undefined') data.bio = bio;
+    if (typeof handle !== 'undefined') data.handle = handle;
+
+    // 아무 필드도 안 왔으면 400
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'No updatable fields provided' });
+    }
+
+    // 4) 업데이트
+    const updated = await prisma.user.update({
+      where: { id: sessionUser.id },
+      data,
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        handle: true,
+        bio: true,
+        trustScore: true,
+        verifiedFlags: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
 
-    return res.json({
-      user: {
-        id: updatedUser.id,
-        handle: updatedUser.handle,
-        bio: updatedUser.bio,
-        trustScore: updatedUser.trustScore,
-        joinedAt: updatedUser.createdAt,
-        stats: {
-          posts: (updatedUser as any)._count.posts,
-          followers: (updatedUser as any)._count.followers,
-          following: (updatedUser as any)._count.following,
-        },
-      },
+    return res.status(200).json({
+      message: 'User updated successfully',
+      data: { user: updated },
     });
   })
 );

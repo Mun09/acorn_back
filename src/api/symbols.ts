@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { extractSymbolsFromText, formatSymbol } from '../lib/symbols';
 import { asyncHandler } from './middleware/error';
 
-const router = Router();
+const router: Router = Router();
 
 // Validation helper
 function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {

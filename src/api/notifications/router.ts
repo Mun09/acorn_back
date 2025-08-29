@@ -4,31 +4,10 @@
  */
 
 import { Router } from 'express';
-import { z } from 'zod';
 import { prisma } from '../../lib/prisma';
+import { markAsReadSchema, notificationQuerySchema } from '../../types/schema';
 
 const router: Router = Router();
-
-// Validation schemas
-const notificationQuerySchema = z.object({
-  page: z
-    .string()
-    .optional()
-    .transform(val => (val ? parseInt(val) : 1)),
-  limit: z
-    .string()
-    .optional()
-    .transform(val => (val ? parseInt(val) : 20)),
-  type: z.enum(['MENTION', 'REPLY', 'REACTION', 'FOLLOW']).optional(),
-  unread: z
-    .string()
-    .optional()
-    .transform(val => val === 'true'),
-});
-
-const markAsReadSchema = z.object({
-  notificationIds: z.array(z.string()).optional(),
-});
 
 /**
  * GET /api/notifications
@@ -38,6 +17,7 @@ router.get('/', async (req, res) => {
   try {
     const query = notificationQuerySchema.parse(req.query);
     const { page, limit, type, unread } = query;
+    console.log('Parsed query:', query);
     const offset = (page - 1) * limit;
 
     const where: any = {
@@ -52,6 +32,8 @@ router.get('/', async (req, res) => {
       where.readAt = unread ? null : { not: null };
     }
 
+    console.log('Fetching notifications with filters:', where);
+
     const [notifications, total] = await Promise.all([
       prisma.notification.findMany({
         where,
@@ -61,6 +43,8 @@ router.get('/', async (req, res) => {
       }),
       prisma.notification.count({ where }),
     ]);
+
+    console.log('Fetched notifications:', notifications, 'Total:', total);
 
     res.json({
       notifications,

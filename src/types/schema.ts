@@ -14,3 +14,20 @@ export const UpdateUserSchema = z.object({
     .regex(/^[a-zA-Z0-9_]+$/)
     .optional(),
 });
+
+export const notificationQuerySchema = z.object({
+  page: z
+    .string()
+    .optional()
+    .transform(val => (val ? parseInt(val) : 1)),
+  limit: z
+    .string()
+    .optional()
+    .transform(val => (val ? parseInt(val) : 20)),
+  type: z.enum(['MENTION', 'REPLY', 'REACTION', 'FOLLOW']).optional(),
+  unread: z.string().optional(),
+});
+
+export const markAsReadSchema = z.object({
+  notificationIds: z.array(z.string()).optional(),
+});

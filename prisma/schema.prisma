@@ -166,6 +166,7 @@ enum NotificationKind {
   REPLY
   REACTION
   FOLLOW
+  SYSTEM
 }
 
 enum ReportReason {

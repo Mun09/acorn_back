@@ -17,7 +17,6 @@ router.get('/', async (req, res) => {
   try {
     const query = notificationQuerySchema.parse(req.query);
     const { page, limit, type, unread } = query;
-    console.log('Parsed query:', query);
     const offset = (page - 1) * limit;
 
     const where: any = {
@@ -31,8 +30,6 @@ router.get('/', async (req, res) => {
     if (unread !== undefined) {
       where.readAt = unread ? null : { not: null };
     }
-
-    console.log('Fetching notifications with filters:', where);
 
     const [notifications, total] = await Promise.all([
       prisma.notification.findMany({

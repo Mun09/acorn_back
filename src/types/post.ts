@@ -21,15 +21,18 @@ export const PostSchema = z.object({
       exchange: z.string().nullable(),
     })
   ),
-  reactionCounts: z.record(z.string(), z.number()),
-  userReactions: z.array(z.string()),
-  score: z.number(),
-  scoreBreakdown: z.object({
-    initialReactionScore: z.number(),
-    timeDecayScore: z.number(),
-    symbolMatchScore: z.number(),
-    totalScore: z.number(),
-  }),
+  reactionCounts: z.record(z.string(), z.number()).optional(),
+  userReactions: z.array(z.string()).optional(),
+  score: z.number().optional(),
+  scoreBreakdown: z
+    .object({
+      initialReactionScore: z.number(),
+      timeDecayScore: z.number(),
+      symbolMatchScore: z.number(),
+      totalScore: z.number(),
+    })
+    .optional(),
+  replies: z.array(z.any()).optional(),
 });
 
 export type SearchPostsResult = {

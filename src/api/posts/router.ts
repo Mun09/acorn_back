@@ -770,7 +770,7 @@ router.get('/:id', readOnlyRateLimit, async (req, res) => {
       : [];
 
     // Process replies with reaction counts
-    const processedReplies = post.replies.map((reply: any) => {
+    const processedReplies = post.replies.map(reply => {
       const replyReactionCounts = reply.reactions.reduce(
         (acc: Record<string, number>, reaction: { type: string }) => {
           acc[reaction.type] = (acc[reaction.type] || 0) + 1;
@@ -795,13 +795,10 @@ router.get('/:id', readOnlyRateLimit, async (req, res) => {
 
     const result = {
       ...post,
-      media: (post as any).media
-        ? JSON.parse((post as any).media as string)
-        : null,
       reactionCounts,
       userReactions,
       replies: processedReplies,
-      reactions: undefined, // Remove raw reactions array
+      author: post.user,
     };
 
     return res.json({

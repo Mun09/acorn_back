@@ -306,7 +306,7 @@ export async function searchPosts(
   );
 
   // 점수 또는 랭크로 정렬(원하면 교체)
-  formatted.sort((a, b) => b.score - a.score);
+  formatted.sort((a, b) => b.score! - a.score!);
 
   const nextCursor =
     hasMore && itemsRaw.length > 0

@@ -248,7 +248,10 @@ async function getForYouFeed(
   }
 
   const posts = await prisma.post.findMany({
-    where: whereClause,
+    where: {
+      ...whereClause,
+      replyTo: null, // Exclude posts that are replies to other posts
+    },
     include: {
       user: {
         select: {

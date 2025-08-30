@@ -225,6 +225,7 @@ interface NotificationData {
   type: 'MENTION' | 'REPLY' | 'REACTION' | 'FOLLOW';
   userId: number;
   fromUserId: number;
+  fromUserHandle?: string;
   relatedEntityId: number | null;
   message: string;
 }
@@ -237,6 +238,7 @@ async function createNotification(data: NotificationData): Promise<void> {
       payload: {
         fromUserId: data.fromUserId,
         relatedEntityId: data.relatedEntityId,
+        fromUserHandle: data.fromUserHandle,
         message: data.message,
       },
     },
@@ -447,6 +449,7 @@ export async function createReactionNotification(
       type: 'REACTION',
       userId: postUserId,
       fromUserId,
+      fromUserHandle,
       relatedEntityId,
       message: `@${fromUserHandle} ${reactionType.toLowerCase()}d your post`,
     });

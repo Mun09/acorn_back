@@ -44,8 +44,6 @@ router.get('/', async (req, res) => {
       prisma.notification.count({ where }),
     ]);
 
-    console.log('Fetched notifications:', notifications, 'Total:', total);
-
     res.json({
       notifications,
       pagination: {

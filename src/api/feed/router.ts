@@ -7,6 +7,20 @@ import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { readOnlyRateLimit } from '../middleware/rateLimit';
 import { prisma } from '../../lib/prisma';
+import {
+  calculateForYouScore,
+  calculateInitialReactionScore,
+  calculateSymbolMatchBonus,
+  calculateTimeDecay,
+  getUserInterestSymbols,
+} from '../../lib/feed_algorithm';
+import {
+  FEED_INITIAL_REACTION_WEIGHT,
+  FEED_MAX_POST_AGE,
+  FEED_RECENT_REACTION_WINDOW,
+  FEED_SYMBOL_MATCH_WEIGHT,
+  FEED_TIME_DECAY_WEIGHT,
+} from '../../config/env';
 
 const router: Router = Router();
 
@@ -17,25 +31,6 @@ const feedQuerySchema = z.object({
   limit: z.coerce.number().min(1).max(50).default(20),
 });
 
-// Feed algorithm parameters
-const FEED_PARAMS = {
-  // For You algorithm weights
-  INITIAL_REACTION_WEIGHT: 0.4, // α - Early reactions boost
-  TIME_DECAY_WEIGHT: 0.3, // β - Time decay factor
-  SYMBOL_MATCH_WEIGHT: 0.3, // γ - User interest symbol matching
-
-  // Time windows
-  RECENT_REACTION_WINDOW: 2 * 60 * 60 * 1000, // 2 hours for initial reactions
-  MAX_POST_AGE: 24 * 60 * 60 * 1000, // 24 hours max age for for_you feed
-
-  // Scoring
-  REACTION_SCORES: {
-    LIKE: 1,
-    BOOST: 3,
-    BOOKMARK: 2,
-  },
-} as const;
-
 // Validation helper
 function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
   const result = schema.safeParse(data);
@@ -43,32 +38,6 @@ function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
     throw new Error(`Validation failed: ${result.error.message}`);
   }
   return result.data;
-}
-
-/**
- * Calculate time decay factor based on post age
- */
-function calculateTimeDecay(createdAt: Date): number {
-  const ageInHours = (Date.now() - createdAt.getTime()) / (60 * 60 * 1000);
-  // Exponential decay: score decreases by half every 6 hours
-  return Math.exp(-ageInHours / 6);
-}
-
-/**
- * Calculate symbol match bonus for user interests
- */
-function calculateSymbolMatchBonus(
-  postSymbols: string[],
-  userInterestSymbols: string[]
-): number {
-  if (userInterestSymbols.length === 0) return 0;
-
-  const matches = postSymbols.filter(symbol =>
-    userInterestSymbols.includes(symbol)
-  ).length;
-
-  // Bonus ranges from 0 to 1 based on match percentage
-  return Math.min(matches / Math.max(userInterestSymbols.length, 1), 1);
 }
 
 /**
@@ -248,7 +217,7 @@ async function getForYouFeed(
   const userInterestSymbols = await getUserInterestSymbols(userId);
 
   // Get all posts from the last 24 hours for algorithmic ranking
-  const cutoffTime = new Date(Date.now() - FEED_PARAMS.MAX_POST_AGE);
+  const cutoffTime = new Date(Date.now() - FEED_MAX_POST_AGE);
 
   let whereClause: any = {
     createdAt: {
@@ -401,138 +370,6 @@ async function getForYouFeed(
 }
 
 /**
- * Get user's interest symbols based on their recent interactions
- */
-async function getUserInterestSymbols(userId: number): Promise<string[]> {
-  // Get symbols from user's recent posts and reactions
-  const [recentPosts, recentReactions] = await Promise.all([
-    // User's recent posts
-    prisma.post.findMany({
-      where: {
-        userId,
-        createdAt: {
-          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
-        },
-      },
-      include: {
-        symbols: {
-          include: {
-            symbol: true,
-          },
-        },
-      },
-      take: 20,
-    }),
-
-    // User's recent reactions
-    prisma.reaction.findMany({
-      where: {
-        userId,
-      },
-      include: {
-        post: {
-          include: {
-            symbols: {
-              include: {
-                symbol: true,
-              },
-            },
-          },
-        },
-      },
-      take: 50,
-    }),
-  ]);
-
-  const symbolCounts = new Map<string, number>();
-
-  // Count symbols from user's posts (higher weight)
-  recentPosts.forEach((post: any) => {
-    post.symbols.forEach((ps: any) => {
-      const ticker = ps.symbol.ticker;
-      symbolCounts.set(ticker, (symbolCounts.get(ticker) || 0) + 3);
-    });
-  });
-
-  // Count symbols from reacted posts (lower weight)
-  recentReactions.forEach((reaction: any) => {
-    reaction.post.symbols.forEach((ps: any) => {
-      const ticker = ps.symbol.ticker;
-      symbolCounts.set(ticker, (symbolCounts.get(ticker) || 0) + 1);
-    });
-  });
-
-  // Return top symbols sorted by interest score
-  return Array.from(symbolCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([ticker]) => ticker);
-}
-
-/**
- * Calculate For You algorithm score
- */
-function calculateForYouScore(
-  createdAt: Date,
-  reactionCounts: { LIKE: number; BOOST: number; BOOKMARK: number },
-  symbols: Array<{ ticker: string; raw: string; kind: string }>,
-  userInterestSymbols: string[]
-): number {
-  // α: Initial reaction score (weighted by reaction type and recency)
-  const initialReactionScore = calculateInitialReactionScore(
-    createdAt,
-    reactionCounts
-  );
-
-  // β: Time decay factor
-  const timeDecayScore = calculateTimeDecay(createdAt);
-
-  // γ: Symbol interest matching bonus
-  const symbolMatchScore = calculateSymbolMatchBonus(
-    symbols.map(s => s.ticker),
-    userInterestSymbols
-  );
-
-  // Weighted combination
-  const finalScore =
-    FEED_PARAMS.INITIAL_REACTION_WEIGHT * initialReactionScore +
-    FEED_PARAMS.TIME_DECAY_WEIGHT * timeDecayScore +
-    FEED_PARAMS.SYMBOL_MATCH_WEIGHT * symbolMatchScore;
-
-  return Number(finalScore.toFixed(4));
-}
-
-/**
- * Calculate initial reaction score with recency boost
- */
-function calculateInitialReactionScore(
-  createdAt: Date,
-  reactionCounts: { LIKE: number; BOOST: number; BOOKMARK: number }
-): number {
-  const { LIKE, BOOST, BOOKMARK } = reactionCounts;
-  const { REACTION_SCORES } = FEED_PARAMS;
-
-  // Base reaction score
-  const baseScore =
-    LIKE * REACTION_SCORES.LIKE +
-    BOOST * REACTION_SCORES.BOOST +
-    BOOKMARK * REACTION_SCORES.BOOKMARK;
-
-  // Early reaction boost (reactions within first 2 hours get extra weight)
-  const postAge = Date.now() - createdAt.getTime();
-  const isEarlyReaction = postAge <= FEED_PARAMS.RECENT_REACTION_WINDOW;
-  const earlyBoost = isEarlyReaction ? 1.5 : 1.0;
-
-  // Normalize by typical reaction counts (log scale to prevent outliers)
-  const normalizedScore = Math.log(baseScore + 1) * earlyBoost;
-
-  return Number(normalizedScore.toFixed(4));
-}
-
-/**
- * Generate random symbols for mock posts
- */
-/**
  * GET /feed/debug
  * Debug endpoint to understand algorithm scoring
  */
@@ -628,9 +465,9 @@ router.get(
             total: totalScore,
           },
           weights: {
-            alpha: FEED_PARAMS.INITIAL_REACTION_WEIGHT,
-            beta: FEED_PARAMS.TIME_DECAY_WEIGHT,
-            gamma: FEED_PARAMS.SYMBOL_MATCH_WEIGHT,
+            alpha: FEED_INITIAL_REACTION_WEIGHT,
+            beta: FEED_TIME_DECAY_WEIGHT,
+            gamma: FEED_SYMBOL_MATCH_WEIGHT,
           },
         },
       };
@@ -645,7 +482,13 @@ router.get(
       message: 'Feed algorithm debug information',
       userId,
       userInterestSymbols,
-      parameters: FEED_PARAMS,
+      parameters: {
+        initialReactionWeight: FEED_INITIAL_REACTION_WEIGHT,
+        timeDecayWeight: FEED_TIME_DECAY_WEIGHT,
+        symbolMatchWeight: FEED_SYMBOL_MATCH_WEIGHT,
+        recentReactionWindow: FEED_RECENT_REACTION_WINDOW,
+        maxPostAge: FEED_MAX_POST_AGE,
+      },
       samplePosts,
     });
   })

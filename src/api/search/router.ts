@@ -7,16 +7,21 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../middleware/error';
 import { prisma } from '../../lib/prisma';
+import {
+  SearchedResponse,
+  SearchedUser,
+  searchQuerySchema,
+  UserWithCounts,
+} from '../../types/search';
+import { Post, PostSchema, SearchPostsResult } from '../../types/post';
+import {
+  calculateInitialReactionScore,
+  calculateSymbolMatchBonus,
+  calculateTimeDecay,
+  getUserInterestSymbols,
+} from '../../lib/feed_algorithm';
 
 const router: Router = Router();
-
-// Validation schemas
-const searchQuerySchema = z.object({
-  q: z.string().min(1).max(200).trim(),
-  type: z.enum(['posts', 'people', 'symbols', 'all']).default('all'),
-  limit: z.coerce.number().min(1).max(50).default(20),
-  cursor: z.string().optional(),
-});
 
 // Search configuration
 const SEARCH_CONFIG = {
@@ -55,14 +60,14 @@ function validateData<T>(schema: z.ZodSchema<T>, data: unknown): T {
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const { q, type, limit, cursor } = validateData(
+    const { query, type, limit, cursor } = validateData(
       searchQuerySchema,
       req.query
     );
     const userId = req.user?.id;
 
     // Sanitize search query
-    const sanitizedQuery = sanitizeSearchQuery(q);
+    const sanitizedQuery = sanitizeSearchQuery(query);
     if (!sanitizedQuery) {
       return res.status(400).json({
         error: 'Invalid search query',
@@ -71,11 +76,13 @@ router.get(
     }
 
     const startTime = Date.now();
-    const results: any = {
-      query: q,
+    const results: SearchedResponse = {
+      query,
       type,
       total: 0,
       searchTime: 0,
+      people: null,
+      posts: null,
     };
 
     try {
@@ -102,6 +109,8 @@ router.get(
       results.searchTime = Date.now() - startTime;
       Object.assign(results, searchResults);
 
+      console.log(results);
+
       return res.json(results);
     } catch (error: any) {
       const searchTime = Date.now() - startTime;
@@ -111,7 +120,7 @@ router.get(
           error: 'Search timeout',
           message: 'Search query took too long to execute',
           searchTime,
-          query: q,
+          query,
         });
       }
 
@@ -145,48 +154,16 @@ async function performSearch(
 ): Promise<any> {
   const results: any = { total: 0 };
 
-  if (type === 'all') {
-    // Search all types in parallel
-    const [posts, people, symbols] = await Promise.all([
-      searchPosts(
-        query,
-        Math.min(limit, SEARCH_CONFIG.MAX_RESULTS_PER_TYPE),
-        cursor,
-        userId
-      ),
-      searchPeople(
-        query,
-        Math.min(limit, SEARCH_CONFIG.MAX_RESULTS_PER_TYPE),
-        cursor
-      ),
-      searchSymbols(
-        query,
-        Math.min(limit, SEARCH_CONFIG.MAX_RESULTS_PER_TYPE),
-        cursor
-      ),
-    ]);
-
-    results.posts = posts;
-    results.people = people;
-    results.symbols = symbols;
-    results.total =
-      posts.items.length + people.items.length + symbols.items.length;
-  } else {
-    // Search specific type
-    switch (type) {
-      case 'posts':
-        results.posts = await searchPosts(query, limit, cursor, userId);
-        results.total = results.posts.items.length;
-        break;
-      case 'people':
-        results.people = await searchPeople(query, limit, cursor);
-        results.total = results.people.items.length;
-        break;
-      case 'symbols':
-        results.symbols = await searchSymbols(query, limit, cursor);
-        results.total = results.symbols.items.length;
-        break;
-    }
+  // Search specific type
+  switch (type) {
+    case 'posts':
+      results.posts = await searchPosts(query, limit, cursor, userId);
+      results.total = results.posts.items.length;
+      break;
+    case 'people':
+      results.people = await searchPeople(query, limit, cursor);
+      results.total = results.people.items.length;
+      break;
   }
 
   return results;
@@ -195,12 +172,13 @@ async function performSearch(
 /**
  * Search posts with content matching and ranking
  */
-async function searchPosts(
+export async function searchPosts(
   query: string,
   limit: number,
   cursor?: string,
   _userId?: number
-) {
+): Promise<SearchPostsResult> {
+  const userId = _userId ?? 0; // For reaction context, 0 if not logged in
   let whereClause: any = {
     OR: [
       {
@@ -213,15 +191,12 @@ async function searchPosts(
     isHidden: false,
   };
 
-  // Handle cursor for pagination
   if (cursor) {
     try {
       const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
-      whereClause.id = {
-        lt: cursorData.id,
-      };
-    } catch (error) {
-      // Invalid cursor, ignore
+      whereClause.id = { lt: cursorData.id };
+    } catch {
+      // invalid cursor는 무시
     }
   }
 
@@ -239,7 +214,7 @@ async function searchPosts(
       },
       symbols: {
         include: {
-          symbol: true,
+          symbol: true, // {ticker, kind, exchange}
         },
       },
       reactions: {
@@ -248,76 +223,100 @@ async function searchPosts(
           userId: true,
         },
       },
-      _count: {
-        select: {
-          reactions: true,
-          replies: true,
-        },
-      },
     },
-    orderBy: [
-      {
-        createdAt: 'desc',
-      },
-    ],
+    orderBy: [{ createdAt: 'desc' }],
     take: limit + 1,
   });
 
   const hasMore = posts.length > limit;
-  const items = hasMore ? posts.slice(0, -1) : posts;
+  const itemsRaw = hasMore ? posts.slice(0, -1) : posts;
 
-  const formattedPosts = items.map((post: any) => {
-    const reactionCounts = post.reactions.reduce(
-      (
-        acc: Record<string, number>,
-        reaction: { type: string; userId: number }
-      ) => {
-        acc[reaction.type] = (acc[reaction.type] || 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
+  const formatted: Post[] = await Promise.all(
+    itemsRaw.map(async post => {
+      // reactionCounts
+      const reactionCounts = post.reactions.reduce(
+        (
+          acc: { LIKE: number; BOOST: number; BOOKMARK: number },
+          reaction: { type: string; userId: number }
+        ) => {
+          if (
+            reaction.type === 'LIKE' ||
+            reaction.type === 'BOOST' ||
+            reaction.type === 'BOOKMARK'
+          ) {
+            acc[reaction.type] = (acc[reaction.type] || 0) + 1;
+          }
+          return acc;
+        },
+        { LIKE: 0, BOOST: 0, BOOKMARK: 0 }
+      );
 
-    // Calculate simple relevance rank based on text match
-    const rank = calculateTextRelevance(post.text, query);
+      const userInterestSymbols = await getUserInterestSymbols(userId);
 
-    return {
-      id: post.id,
-      content: post.text,
-      author: {
-        id: post.user.id,
-        handle: post.user.handle,
-        displayName: post.user.handle,
-        bio: post.user.bio,
-        trustScore: post.user.trustScore,
-        verifiedFlags: post.user.verifiedFlags,
-      },
-      createdAt: post.createdAt.toISOString(),
-      reactionCounts,
-      rank,
-      highlights: extractHighlights(post.text, query),
-      symbols: post.symbols.map((ps: any) => ({
-        ticker: ps.symbol.ticker,
-        kind: ps.symbol.kind,
-        exchange: ps.symbol.exchange,
-      })),
-    };
-  });
+      const postSymbols = post.symbols.map((ps: any) => ps.symbol.ticker);
 
-  // Sort by rank (descending)
-  formattedPosts.sort((a: any, b: any) => b.rank - a.rank);
+      // Get user's reactions to this post
+      const userReactions = post.reactions
+        .filter((r: { userId: number }) => r.userId === userId)
+        .map((r: { type: string }) => r.type);
+
+      const score = 1.0;
+
+      const obj = {
+        id: post.id,
+        text: post.text,
+        userId: post.userId,
+        createdAt: post.createdAt, // Date 객체 그대로
+        author: {
+          id: post.user.id,
+          handle: post.user.handle,
+          bio: post.user.bio ?? null,
+          // 스키마가 nullable 이라 null 허용하지만 실제로는 number
+          trustScore: post.user.trustScore ?? null,
+          verifiedFlags: post.user.verifiedFlags ?? null,
+        },
+        symbols: post.symbols.map((ps: any) => ({
+          raw: ps.symbol.ticker,
+          ticker: ps.symbol.ticker,
+          kind: ps.symbol.kind,
+          exchange: ps.symbol.exchange,
+        })),
+        reactionCounts,
+        userReactions,
+        // 총점
+        score,
+        scoreBreakdown: {
+          initialReactionScore: calculateInitialReactionScore(
+            post.createdAt,
+            reactionCounts
+          ),
+          timeDecayScore: calculateTimeDecay(post.createdAt),
+          symbolMatchScore: calculateSymbolMatchBonus(
+            postSymbols,
+            userInterestSymbols
+          ),
+          totalScore: score,
+        },
+      };
+
+      // 런타임 안전망: 스키마로 검증(개발 단계에서 유용)
+      const parsed = PostSchema.parse(obj);
+      return parsed;
+    })
+  );
+
+  // 점수 또는 랭크로 정렬(원하면 교체)
+  formatted.sort((a, b) => b.score - a.score);
 
   const nextCursor =
-    hasMore && items.length > 0
+    hasMore && itemsRaw.length > 0
       ? Buffer.from(
-          JSON.stringify({
-            id: items[items.length - 1]!.id,
-          })
+          JSON.stringify({ id: itemsRaw[itemsRaw.length - 1]!.id })
         ).toString('base64')
       : null;
 
   return {
-    items: formattedPosts,
+    items: formatted,
     hasMore,
     nextCursor,
   };
@@ -374,9 +373,9 @@ async function searchPeople(query: string, limit: number, cursor?: string) {
   });
 
   const hasMore = users.length > limit;
-  const items = hasMore ? users.slice(0, -1) : users;
+  const items: UserWithCounts[] = hasMore ? users.slice(0, -1) : users;
 
-  const formattedUsers = items.map((user: any) => {
+  const formattedUsers: SearchedUser[] = items.map((user: UserWithCounts) => {
     // Calculate relevance rank
     const rank = calculateTextRelevance(
       `${user.handle} ${user.bio || ''}`,
@@ -394,7 +393,7 @@ async function searchPeople(query: string, limit: number, cursor?: string) {
       followingCount: user._count.following,
       postCount: user._count.posts,
       trustScore: user.trustScore,
-      isFollowing: false, // Would need to check follow relationship with current user
+      // isFollowing: false, // Would need to check follow relationship with current user
       rank,
       highlights: {
         handle: extractHighlights(user.handle, query),
@@ -426,87 +425,87 @@ async function searchPeople(query: string, limit: number, cursor?: string) {
 /**
  * Search symbols by ticker and name
  */
-async function searchSymbols(query: string, limit: number, cursor?: string) {
-  let whereClause: any = {
-    OR: [
-      {
-        ticker: {
-          contains: query.toUpperCase(),
-          mode: 'insensitive',
-        },
-      },
-    ],
-  };
+// async function searchSymbols(query: string, limit: number, cursor?: string) {
+//   let whereClause: any = {
+//     OR: [
+//       {
+//         ticker: {
+//           contains: query.toUpperCase(),
+//           mode: 'insensitive',
+//         },
+//       },
+//     ],
+//   };
 
-  // Handle cursor for pagination
-  if (cursor) {
-    try {
-      const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
-      whereClause.id = {
-        lt: cursorData.id,
-      };
-    } catch (error) {
-      // Invalid cursor, ignore
-    }
-  }
+//   // Handle cursor for pagination
+//   if (cursor) {
+//     try {
+//       const cursorData = JSON.parse(Buffer.from(cursor, 'base64').toString());
+//       whereClause.id = {
+//         lt: cursorData.id,
+//       };
+//     } catch (error) {
+//       // Invalid cursor, ignore
+//     }
+//   }
 
-  const symbols = await prisma.symbol.findMany({
-    where: whereClause,
-    include: {
-      _count: {
-        select: {
-          posts: true,
-        },
-      },
-    },
-    orderBy: {
-      ticker: 'asc',
-    },
-    take: limit + 1,
-  });
+//   const symbols = await prisma.symbol.findMany({
+//     where: whereClause,
+//     include: {
+//       _count: {
+//         select: {
+//           posts: true,
+//         },
+//       },
+//     },
+//     orderBy: {
+//       ticker: 'asc',
+//     },
+//     take: limit + 1,
+//   });
 
-  const hasMore = symbols.length > limit;
-  const items = hasMore ? symbols.slice(0, -1) : symbols;
+//   const hasMore = symbols.length > limit;
+//   const items = hasMore ? symbols.slice(0, -1) : symbols;
 
-  const formattedSymbols = items.map((symbol: any) => {
-    const rank = calculateTextRelevance(symbol.ticker, query);
+//   const formattedSymbols = items.map((symbol: any) => {
+//     const rank = calculateTextRelevance(symbol.ticker, query);
 
-    return {
-      id: symbol.id,
-      ticker: symbol.ticker,
-      name: symbol.ticker, // Using ticker as name since we don't have company names
-      kind: symbol.kind,
-      exchange: symbol.exchange,
-      price: null, // Would need external API for real-time prices
-      change24h: null,
-      marketCap: null,
-      mentionCount: symbol._count.posts,
-      rank,
-      highlights: {
-        ticker: extractHighlights(symbol.ticker, query),
-        name: extractHighlights(symbol.ticker, query),
-      },
-    };
-  });
+//     return {
+//       id: symbol.id,
+//       ticker: symbol.ticker,
+//       name: symbol.ticker, // Using ticker as name since we don't have company names
+//       kind: symbol.kind,
+//       exchange: symbol.exchange,
+//       price: null, // Would need external API for real-time prices
+//       change24h: null,
+//       marketCap: null,
+//       mentionCount: symbol._count.posts,
+//       rank,
+//       highlights: {
+//         ticker: extractHighlights(symbol.ticker, query),
+//         name: extractHighlights(symbol.ticker, query),
+//       },
+//     };
+//   });
 
-  // Sort by rank (descending)
-  formattedSymbols.sort((a: any, b: any) => b.rank - a.rank);
+//   // Sort by rank (descending)
+//   formattedSymbols.sort((a: any, b: any) => b.rank - a.rank);
 
-  const nextCursor =
-    hasMore && items.length > 0
-      ? Buffer.from(
-          JSON.stringify({
-            id: items[items.length - 1]!.id,
-          })
-        ).toString('base64')
-      : null;
+//   const nextCursor =
+//     hasMore && items.length > 0
+//       ? Buffer.from(
+//           JSON.stringify({
+//             id: items[items.length - 1]!.id,
+//           })
+//         ).toString('base64')
+//       : null;
 
-  return {
-    items: formattedSymbols,
-    hasMore,
-    nextCursor,
-  };
-}
+//   return {
+//     items: formattedSymbols,
+//     hasMore,
+//     nextCursor,
+//   };
+// }
 
 /**
  * Calculate text relevance score
